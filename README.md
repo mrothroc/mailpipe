@@ -1,6 +1,12 @@
 # mailpipe
 
-mailpipe is a local Go CLI for processing a Microsoft 365 mailbox. It mirrors messages into SQLite, runs configurable classifiers, and turns their labels into reviewed plans for moving mail to Deleted Items, managing sender rules, or filing records as PDFs.
+I was tired of handling a ludicrous amount of email, so I built mailpipe. It is designed as a CLI to be used by an agent to let it help you classify and manage email in a Microsoft 365 mailbox in bulk. I originally tried just controlling the Mail app on my Mac, but it was way too slow.
+
+I use it to automatically delete spam and block senders. It also saves records (like receipts) as PDFs to the local disk, then deletes the emails. Finally, for certain categories, it will automatically delete messages that have been sitting in my inbox for a configured time period so things don't pile up.
+
+Theoretically a human can use it, but it is intended to be used by an agent.
+
+It mirrors messages into SQLite, runs configurable classifiers, and turns their labels into reviewed plans for moving mail to Deleted Items, managing sender rules, or filing records as PDFs.
 
 Classifiers judge messages; policy and numbered plans control actions. Mailbox changes require an explicit `--execute`. Scans run on demand; no scheduler is installed.
 
