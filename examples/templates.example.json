@@ -1,0 +1,61 @@
+{
+  "templates": [
+    {
+      "id": "school-gift-receipt",
+      "senders": [
+        "giving@school.example.org"
+      ],
+      "describe": "A tax receipt for a gift to the school, with a receipt number and the date of the gift",
+      "subject": "^Gift Receipt",
+      "anchors": [
+        "Please keep this email as your receipt for tax purposes.",
+        "No goods or services were provided in exchange for this gift."
+      ],
+      "fields": {
+        "date": {
+          "pattern": "Gift date: (\\S+)",
+          "type": "date"
+        },
+        "receipt": {
+          "pattern": "Receipt number: (\\d+)"
+        }
+      },
+      "file": {
+        "folder": "Records/{date.year}/Donations",
+        "name": "{date}_School_Gift Receipt_{receipt}"
+      }
+    },
+    {
+      "id": "software-invoice",
+      "senders": [
+        "@billing.example.com"
+      ],
+      "describe": "An invoice for a software subscription, with the invoice attached",
+      "subject": "^Example Software: Invoice INV\\d+$",
+      "anchors": [
+        "Attached you will find our invoice"
+      ],
+      "fields": {
+        "date": {
+          "from": "received"
+        },
+        "invoice": {
+          "from": "subject",
+          "pattern": "(INV\\d+)"
+        }
+      },
+      "file": {
+        "folder": "Records/{date.year}/Invoices",
+        "name": "{date}_Example Software_Invoice_{invoice}"
+      }
+    },
+    {
+      "id": "ride-receipt",
+      "senders": [
+        "receipts@rides.example.net"
+      ],
+      "describe": "A routine ride notification; this illustrative template does not file it",
+      "subject": "^Your .* ride"
+    }
+  ]
+}

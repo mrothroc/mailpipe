@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+PATH="$root/bin:$PATH"
+export PATH
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo 'gitleaks is required; run make install-security-tools' >&2
+    exit 1
+fi
+exec gitleaks git --pre-commit --staged --redact --no-banner --ignore-gitleaks-allow

@@ -1,0 +1,31 @@
+bin/
+out/
+
+# Local workflow state is never shared.
+.weft/
+
+# Private runtime data and classifier implementations never belong in Git.
+/mail/
+/hooks/
+/private/
+*.db
+*.db-wal
+*.db-shm
+*.eml
+*.jsonl
+*.bak-*
+.venv/
+__pycache__/
+.pytest_cache/
+/stages.json
+/templates.json
+/config.json
+
+# Local tool state and machine metadata must survive a fresh Git init.
+.projectdb/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3

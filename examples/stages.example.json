@@ -1,0 +1,75 @@
+{
+  "self_addresses": [
+    "alex@example.com",
+    "alex.other@example.org"
+  ],
+  "self_domains": [
+    "example.com"
+  ],
+  "openrouter": {
+    "keychain_service": "mailpipe-openrouter",
+    "keychain_account": "default"
+  },
+  "stages": [
+    {
+      "name": "known",
+      "type": "allowlist"
+    },
+    {
+      "name": "political",
+      "type": "jev",
+      "threshold": 0.5,
+      "question": {
+        "key": "political_appeal",
+        "instructions": "Is this email a mass-sent political or advocacy appeal?",
+        "criteria_true": "A bulk message from a campaign, candidate, party, PAC or advocacy organization asking the reader to donate, sign, call, attend, volunteer or vote, or promoting a candidate or cause.",
+        "criteria_false": "A personal, transactional, work or news message that does not ask the reader to act on a political cause."
+      }
+    },
+    {
+      "name": "newsletter",
+      "type": "exec",
+      "command": [
+        "examples/stages/newsletter.sh"
+      ],
+      "timeout_seconds": 10
+    },
+    {
+      "name": "political-cached",
+      "type": "sender_cache",
+      "source": "political",
+      "label": "political_appeal",
+      "min_verdicts": 3
+    },
+    {
+      "name": "template",
+      "type": "template",
+      "threshold": 0.7
+    }
+  ],
+  "policy": {
+    "keep_senders": [
+      "important-newsletter@example.org"
+    ],
+    "never_block": [
+      "no-reply@newsletter-platform.example.com"
+    ],
+    "rules": [
+      {
+        "stage": "political",
+        "label": "political_appeal",
+        "action": "delete"
+      },
+      {
+        "stage": "political-cached",
+        "label": "political_appeal",
+        "action": "delete"
+      },
+      {
+        "stage": "newsletter",
+        "label": "newsletter",
+        "action": "digest"
+      }
+    ]
+  }
+}
