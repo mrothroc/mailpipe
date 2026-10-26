@@ -16,7 +16,7 @@ func TestPublicTextUsesExampleEmailAddresses(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	root := filepath.Clean(filepath.Join(filepath.Dir(file), "../.."))
 	email := regexp.MustCompile("[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+")
-	for _, name := range []string{"cmd", "internal", "pkg", "tools", "docs", "examples", "AGENTS.md", "PLAN.md", "README.md"} {
+	for _, name := range []string{".github", "cmd", "internal", "pkg", "tools", "docs", "examples", "AGENTS.md", "PLAN.md", "README.md"} {
 		err := filepath.WalkDir(filepath.Join(root, name), func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -25,7 +25,7 @@ func TestPublicTextUsesExampleEmailAddresses(t *testing.T) {
 				return nil
 			}
 			switch filepath.Ext(path) {
-			case ".go", ".md", ".json", ".sh":
+			case ".go", ".md", ".json", ".sh", ".yml", ".yaml":
 			default:
 				return nil
 			}

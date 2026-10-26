@@ -21,6 +21,14 @@ Tool versions are pinned in `Makefile`. The pinned Gitleaks CLI uses the `git --
 
 `govulncheck` module scanning runs from `cmd/mailpipe` because the repository root contains no Go files. It still checks the enclosing module's dependency graph. For call-path analysis when investigating a finding, run the scanner at symbol level from the module root with `./...`.
 
+## GitHub Actions
+
+The [CI workflow](../.github/workflows/ci.yml) runs `make check` on pushes to `main`, pull requests, every Monday at 11:23 UTC, and manual dispatch. It uses a standard `macos-15` runner, installs Poppler, and requires the installed Chrome binary and `pdftotext` before running tests, so browser security tests cannot silently skip because their dependencies are missing.
+
+CI uses the latest stable Go compiler; the release gate still checks that both that compiler and the module's minimum Go family are supported. Newly disclosed dependency vulnerabilities or an unsupported minimum Go version therefore fail the weekly run even without a source change. Scheduled runs use the default branch, can be delayed, and GitHub automatically disables schedules in public repositories after 60 days without repository activity; re-enable the workflow in Actions if that happens. See [GitHub's schedule documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
+The workflow has read-only repository permissions, SHA-pinned official actions, no persisted checkout credentials, and no dependency caches or uploaded artifacts. Fork contributions use `pull_request`, with GitHub's normal approval rules. CI needs no mailbox credentials, model API keys or private configuration; all fixtures are invented. These jobs build and test the project and never operate a real mailbox. Logs are public. The example-address privacy guard also covers workflow YAML under `.github`.
+
 ## Publication boundary
 
 The renderer security tests use invented HTML and temporary canary files. When Chrome and Poppler's `pdftotext` are installed, the test suite also checks the resulting PDF for script execution and local-file inclusion using the actual browser. That integration test skips when either optional tool is unavailable; the sanitizer unit tests always run. Browser flags alone do not enforce the rendering boundary: parsed HTML sanitization and an early Content Security Policy do.

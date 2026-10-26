@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 11 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Release gate (macOS)
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_ANALYTICS: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install current stable Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+
+      - name: Install PDF inspection tools
+        run: brew install poppler
+
+      - name: Require browser security test dependencies
+        run: |
+          test -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --version
+          command -v pdftotext
+
+      - name: Install pinned security tools
+        run: make install-security-tools
+
+      - name: Run release gate
+        run: make check
