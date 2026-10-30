@@ -661,3 +661,264 @@ func TestNativeRuleValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// These controls test rejection at public boundaries; they do not claim that
+// an unbuilt adapter implements the same validation or execution guarantees.
+func TestProviderContractNegativeBoundaries(t *testing.T) {
+	ctx := context.Background()
+	t.Run("equal sized membership substitution", func(t *testing.T) {
+		p := &trashOnly{reader: newReader()}
+		expected := state()
+		p.current.Memberships[1].Collection.CollectionID = "collection-substitute"
+		before := clone(p.current)
+		if len(expected.Memberships) != len(p.current.Memberships) {
+			t.Fatal("control must preserve membership count")
+		}
+		stale(t, mailbox.CheckPrecondition(account, expected, p.current))
+		result, err := mailbox.ApplyReviewed(ctx, p, mailbox.Trash, request())
+		stale(t, err)
+		if p.trashCalls != 0 || p.inspections != 1 || !reflect.DeepEqual(p.current, before) || !reflect.DeepEqual(result, mailbox.State{}) {
+			t.Fatal("substituted collection reached mutation or returned success state")
+		}
+	})
+	t.Run("malformed provider context", func(t *testing.T) {
+		result, err := mailbox.ApplyReviewed(ctx, nil, mailbox.Trash, request())
+		if err == nil || !reflect.DeepEqual(result, mailbox.State{}) {
+			t.Fatal("nil provider accepted")
+		}
+		if mailbox.CapabilitiesOf(nil) != (mailbox.Capabilities{}) {
+			t.Fatal("nil provider advertises capabilities")
+		}
+		rules, err := mailbox.NativeRulesFor(nil)
+		unsupported(t, err)
+		if rules != nil {
+			t.Fatal("nil provider returned rule support")
+		}
+		for _, tc := range []struct {
+			name         string
+			identity     mailbox.Account
+			wrongAccount bool
+		}{
+			{name: "missing account", identity: mailbox.Account{ProviderID: "synthetic"}},
+			{name: "blank account", identity: mailbox.Account{ID: " \t", ProviderID: "synthetic"}},
+			{name: "missing provider", identity: mailbox.Account{ID: account}},
+			{name: "blank provider", identity: mailbox.Account{ID: account, ProviderID: " \t"}},
+			{name: "different configured account", identity: mailbox.Account{ID: "account-b", ProviderID: "synthetic"}, wrongAccount: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				p := &accountContext{trashOnly: &trashOnly{reader: newReader()}, identity: tc.identity}
+				before := clone(p.current)
+				if !tc.wrongAccount && p.identity.Validate() == nil {
+					t.Fatal("malformed account accepted directly")
+				}
+				result, err := mailbox.ApplyReviewed(ctx, p, mailbox.Trash, request())
+				if err == nil {
+					t.Fatal("malformed provider context accepted")
+				}
+				if tc.wrongAccount {
+					mismatch(t, err)
+				}
+				if p.inspections != 0 || p.trashCalls != 0 || !reflect.DeepEqual(before, p.current) || !reflect.DeepEqual(result, mailbox.State{}) {
+					t.Fatal("invalid provider context had effects")
+				}
+			})
+		}
+		invalidBinding := mailbox.Binding{Local: mailbox.LocalRef{AccountID: account}, Remote: state().Ref}
+		if invalidBinding.Validate(account) == nil {
+			t.Fatal("binding with missing stored number accepted")
+		}
+	})
+	t.Run("malformed precondition snapshots", func(t *testing.T) {
+		for _, tc := range []struct {
+			name         string
+			expected     bool
+			change       func(*mailbox.State)
+			wrongAccount bool
+		}{
+			{name: "missing expected identity", expected: true, change: func(s *mailbox.State) { s.Ref.MessageID = "" }},
+			{name: "missing current locator", change: func(s *mailbox.State) { s.Ref.Locator = "" }},
+			{name: "foreign current membership", change: func(s *mailbox.State) { s.Memberships[0].Collection.AccountID = "account-b" }, wrongAccount: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				expected, current := state(), state()
+				if tc.expected {
+					tc.change(&expected)
+				} else {
+					tc.change(&current)
+				}
+				if err := mailbox.CheckPrecondition(account, expected, current); err == nil {
+					t.Fatal("malformed precondition accepted")
+				} else if tc.wrongAccount {
+					mismatch(t, err)
+				}
+				p := &trashOnly{reader: newReader()}
+				p.current = current
+				before := clone(current)
+				r := request()
+				r.Expected = expected
+				_, err := mailbox.ApplyReviewed(ctx, p, mailbox.Trash, r)
+				if err == nil {
+					t.Fatal("malformed state reached action")
+				}
+				if tc.wrongAccount {
+					mismatch(t, err)
+				}
+				if p.trashCalls != 0 || !reflect.DeepEqual(before, p.current) {
+					t.Fatal("malformed state mutated")
+				}
+				if tc.expected && p.inspections != 0 {
+					t.Fatal("invalid expected state reached inspection")
+				}
+			})
+		}
+	})
+	t.Run("cursor and requested scope binding", func(t *testing.T) {
+		scope := state().Memberships[0].Collection
+		cursor := mailbox.Cursor{AccountID: account, CollectionID: scope.CollectionID, Token: "opaque-cursor"}
+		for _, tc := range []struct {
+			name   string
+			scope  mailbox.CollectionRef
+			cursor mailbox.Cursor
+			kind   string
+		}{
+			{name: "scope missing account", scope: mailbox.CollectionRef{CollectionID: scope.CollectionID}},
+			{name: "scope missing collection", scope: mailbox.CollectionRef{AccountID: account}},
+			{name: "foreign requested scope", scope: mailbox.CollectionRef{AccountID: "account-b", CollectionID: scope.CollectionID}, kind: "account"},
+			{name: "cursor missing account", scope: scope, cursor: mailbox.Cursor{CollectionID: scope.CollectionID, Token: cursor.Token}},
+			{name: "cursor missing collection", scope: scope, cursor: mailbox.Cursor{AccountID: account, Token: cursor.Token}, kind: "stale"},
+			{name: "cursor missing token", scope: scope, cursor: mailbox.Cursor{AccountID: account, CollectionID: scope.CollectionID}},
+			{name: "foreign cursor account", scope: scope, cursor: mailbox.Cursor{AccountID: "account-b", CollectionID: scope.CollectionID, Token: cursor.Token}, kind: "account"},
+			{name: "foreign cursor collection", scope: scope, cursor: mailbox.Cursor{AccountID: account, CollectionID: "other-collection", Token: cursor.Token}, kind: "stale"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				q := mailbox.SyncRequest{Collection: tc.scope, Cursor: tc.cursor}
+				err := q.Validate(account)
+				rejected(t, err, tc.kind)
+				// A cursor validates against its supplied scope; selecting the configured
+				// account is SyncRequest's responsibility, not a cursor's ambient default.
+				if tc.name != "foreign requested scope" {
+					rejected(t, tc.cursor.Validate(tc.scope), tc.kind)
+				}
+				p := newReader()
+				before := clone(p.current)
+				p.syncPages = []mailbox.SyncPage{{Mode: mailbox.Snapshot, Complete: true}}
+				page, err := p.Sync(ctx, q)
+				rejected(t, err, tc.kind)
+				if len(p.syncPages) != 1 || !reflect.DeepEqual(before, p.current) || !reflect.DeepEqual(page, mailbox.SyncPage{}) {
+					t.Fatal("invalid request consumed a sync page or changed state")
+				}
+			})
+		}
+	})
+	t.Run("page references and checkpoint binding", func(t *testing.T) {
+		scope := state().Memberships[0].Collection
+		cursor := mailbox.Cursor{AccountID: account, CollectionID: scope.CollectionID, Token: "opaque-token"}
+		cases := []struct {
+			name   string
+			change func(*mailbox.SyncPage)
+			kind   string
+		}{
+			{name: "next missing token", change: func(p *mailbox.SyncPage) { p.Complete = false; p.Next = cursor; p.Next.Token = "" }},
+			{name: "foreign next account", change: func(p *mailbox.SyncPage) { p.Complete = false; p.Next = cursor; p.Next.AccountID = "account-b" }, kind: "account"},
+			{name: "checkpoint missing token", change: func(p *mailbox.SyncPage) { p.Checkpoint = cursor; p.Checkpoint.Token = "" }},
+			{name: "checkpoint missing collection", change: func(p *mailbox.SyncPage) { p.Checkpoint = cursor; p.Checkpoint.CollectionID = "" }, kind: "stale"},
+			{name: "foreign checkpoint account", change: func(p *mailbox.SyncPage) { p.Checkpoint = cursor; p.Checkpoint.AccountID = "account-b" }, kind: "account"},
+			{name: "foreign checkpoint collection", change: func(p *mailbox.SyncPage) { p.Checkpoint = cursor; p.Checkpoint.CollectionID = "other-collection" }, kind: "stale"},
+			{name: "upsert missing account", change: func(p *mailbox.SyncPage) { p.Messages[0].Ref.AccountID = "" }},
+			{name: "upsert foreign account", change: func(p *mailbox.SyncPage) { p.Messages[0].Ref.AccountID = "account-b" }, kind: "account"},
+			{name: "upsert missing identity", change: func(p *mailbox.SyncPage) { p.Messages[0].Ref.MessageID = "" }},
+			{name: "upsert missing locator", change: func(p *mailbox.SyncPage) { p.Messages[0].Ref.Locator = "" }},
+			{name: "removal missing account", change: func(p *mailbox.SyncPage) { p.Removed[0].AccountID = "" }},
+			{name: "removal foreign account", change: func(p *mailbox.SyncPage) { p.Removed[0].AccountID = "account-b" }, kind: "account"},
+			{name: "removal missing identity", change: func(p *mailbox.SyncPage) { p.Removed[0].MessageID = "" }},
+			{name: "removal missing locator", change: func(p *mailbox.SyncPage) { p.Removed[0].Locator = "" }},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				page := mailbox.SyncPage{Mode: mailbox.Delta, Complete: true, Messages: []mailbox.Message{{Ref: state().Ref, Metadata: state().Metadata}}, Removed: []mailbox.MessageRef{{AccountID: account, MessageID: "removed-occurrence", Locator: "removed-route"}}}
+				tc.change(&page)
+				before := page
+				before.Messages = append([]mailbox.Message(nil), page.Messages...)
+				before.Removed = append([]mailbox.MessageRef(nil), page.Removed...)
+				rejected(t, page.Validate(scope), tc.kind)
+				if !reflect.DeepEqual(page, before) {
+					t.Fatal("page validation modified input")
+				}
+			})
+		}
+		for _, badScope := range []mailbox.CollectionRef{{}, {AccountID: account}, {AccountID: "account-b", CollectionID: scope.CollectionID}} {
+			page := mailbox.SyncPage{Mode: mailbox.Snapshot, Complete: true, Messages: []mailbox.Message{{Ref: state().Ref}}}
+			err := page.Validate(badScope)
+			if err == nil {
+				t.Fatal("page accepted malformed or foreign scope")
+			}
+			if badScope.AccountID == "account-b" {
+				mismatch(t, err)
+			}
+		}
+	})
+	t.Run("invalid native rule deletion context", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			change func(*mailbox.ReviewedRuleDeletion)
+			kind   string
+		}{
+			{name: "missing review account", change: func(r *mailbox.ReviewedRuleDeletion) { r.AccountID = "" }},
+			{name: "foreign review account", change: func(r *mailbox.ReviewedRuleDeletion) { r.AccountID = "account-b" }, kind: "account"},
+			{name: "missing rule account", change: func(r *mailbox.ReviewedRuleDeletion) { r.Expected.Ref.AccountID = "" }},
+			{name: "foreign rule account", change: func(r *mailbox.ReviewedRuleDeletion) { r.Expected.Ref.AccountID = "account-b" }, kind: "account"},
+			{name: "missing rule identity", change: func(r *mailbox.ReviewedRuleDeletion) { r.Expected.Ref.ID = "" }},
+			{name: "blank rule identity", change: func(r *mailbox.ReviewedRuleDeletion) { r.Expected.Ref.ID = " \t" }},
+			{name: "missing review number", change: func(r *mailbox.ReviewedRuleDeletion) { r.ReviewID = 0 }},
+			{name: "negative review number", change: func(r *mailbox.ReviewedRuleDeletion) { r.ReviewID = -1 }},
+			{name: "missing expected sender set", change: func(r *mailbox.ReviewedRuleDeletion) { r.Expected.SenderAddresses = nil }},
+			{name: "unrepresentable expected rule", change: func(r *mailbox.ReviewedRuleDeletion) { r.Expected.Representable = false }, kind: "unsupported"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				p := &capable{trashOnly: &trashOnly{reader: newReader()}}
+				rule, err := p.CreateRule(ctx, mailbox.ReviewedRuleCreation{AccountID: account, ReviewID: 4, SenderAddresses: []string{"sender@example.org"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				before := append([]mailbox.NativeRule(nil), p.rules...)
+				deletion := mailbox.ReviewedRuleDeletion{AccountID: account, ReviewID: 4, Expected: rule}
+				tc.change(&deletion)
+				rejected(t, deletion.Validate(account), tc.kind)
+				rejected(t, p.DeleteRule(ctx, deletion), tc.kind)
+				if deletion.Expected.Ref != rule.Ref {
+					rejected(t, deletion.Expected.Ref.Validate(account), tc.kind)
+				}
+				if !reflect.DeepEqual(p.rules, before) {
+					t.Fatal("invalid deletion changed native rules")
+				}
+			})
+		}
+		p := &capable{trashOnly: &trashOnly{reader: newReader()}}
+		_, err := p.CreateRule(ctx, mailbox.ReviewedRuleCreation{AccountID: account, ReviewID: 4})
+		if err == nil || len(p.rules) != 0 {
+			t.Fatal("empty sender set created a native rule")
+		}
+	})
+}
+
+type accountContext struct {
+	*trashOnly
+	identity mailbox.Account
+}
+
+func (p *accountContext) Account() mailbox.Account { return p.identity }
+
+func rejected(t *testing.T, err error, kind string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("invalid input accepted")
+	}
+	switch kind {
+	case "account":
+		mismatch(t, err)
+	case "stale":
+		stale(t, err)
+	case "unsupported":
+		unsupported(t, err)
+	}
+}
