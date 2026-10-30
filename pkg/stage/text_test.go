@@ -21,7 +21,7 @@ func graphStyleBody(prose string) string {
 
 // Graph's text rendering spells every image and link out as a URL. The model
 // must read the prose, not thousands of characters of tracking URLs.
-func TestStateDropsURLNoiseBeforeTruncating(t *testing.T) {
+func TestStateDropsURLNoise(t *testing.T) {
 	prose := "Chip in $5 today to defend democracy before midnight."
 	m := msg()
 	m.Body = graphStyleBody(prose)
@@ -46,11 +46,11 @@ func TestStateKeepsOrdinaryTextAndCollapsesBlankRuns(t *testing.T) {
 	}
 }
 
-func TestStateIsBounded(t *testing.T) {
+func TestStatePreservesLongMessagesAndTheirFinalDeadline(t *testing.T) {
 	m := msg()
-	m.Body = strings.Repeat("word ", 5000)
-	if n := len(stage.State(m)); n > 6300 {
-		t.Fatalf("state is %d chars", n)
+	m.Body = strings.Repeat("Reference material. ", 6000) + "Final deadline: 2031-06-20."
+	if !strings.HasSuffix(stage.State(m), "Final deadline: 2031-06-20.") {
+		t.Fatal("the model must receive the deadline at the end of a long message")
 	}
 }
 

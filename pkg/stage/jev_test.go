@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mrothroc/mailpipe/pkg/policy"
 	"github.com/mrothroc/mailpipe/pkg/stage"
+	"github.com/mrothroc/mailpipe/pkg/store"
 )
 
 var question = stage.Question{Key: "political_appeal", Instructions: "Is this a political appeal?",
@@ -272,5 +274,91 @@ func TestJevChooseRetriesAndStopsAtTheBudget(t *testing.T) {
 	}
 	if _, err := c.Choose(context.Background(), budget, "s", kind); !errors.Is(err, stage.ErrBudget) || calls.Load() != 2 {
 		t.Fatalf("over budget: err %v calls %d", err, calls.Load())
+	}
+}
+
+func TestConservativeExpiryGatesMixedAndAmbiguousMessages(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		past, future, unclear float64
+		wantDelete            bool
+	}{
+		{"mixed past and future", .96, .78, .04, false},
+		{"borderline", .57, .44, .41, false},
+		{"uncertain date", .94, .12, .82, false},
+		{"conflicting", .98, .91, .03, false},
+		{"fully expired", .97, .03, .02, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := jevServer(t, func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					State string `json:"state"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				if !strings.Contains(req.State, "Upcoming registration closes 2031-06-20") {
+					t.Error("missing end-of-message deadline")
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"answers": map[string]any{"past": map[string]any{"noul": tc.past}, "future": map[string]any{"noul": tc.future}, "unclear": map[string]any{"noul": tc.unclear}}, "usage": map[string]any{"cost": 0}})
+			})
+			qs := []stage.Question{{Key: "past", Threshold: .9}, {Key: "future", Threshold: .2}, {Key: "unclear", Threshold: .2}}
+			j := stage.NewJev("schedule", c, qs, .5, stage.NewBudget(1))
+			m := msg()
+			m.Body = "Past workshop: 2031-05-01. " + strings.Repeat("Newsletter content. ", 3000) + "Upcoming registration closes 2031-06-20"
+			v, err := j.Evaluate(context.Background(), m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := policy.Policy{Rules: []policy.Rule{
+				{Stage: "schedule", Label: "past", Action: stage.Delete, Unless: []string{"schedule:future", "schedule:unclear"}, NoBlock: true},
+				{Stage: "category", Label: "event", Action: stage.Delete, OlderThan: "30d", Unless: []string{"schedule:future", "schedule:unclear"}, NoBlock: true},
+			}}
+			d := p.Decide(policy.Message{Received: time.Now().AddDate(-1, 0, 0)}, []store.Verdict{{Stage: v.Stage, Labels: v.Labels}, {Stage: "category", Labels: []string{"event"}}}, time.Now())
+			if (d.Action == stage.Delete) != tc.wantDelete {
+				t.Fatalf("verdict %+v decision %+v", v, d)
+			}
+		})
+	}
+}
+
+func TestOversizedJevInputIsKeptForReviewWithoutModelCall(t *testing.T) {
+	var calls atomic.Int32
+	c := jevServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(answer(.99, 0))
+	})
+	c.MaxInputBytes = 1024
+	j := stage.NewJev("classification", c, []stage.Question{question}, .5, stage.NewBudget(1))
+	m := msg()
+	m.Body = strings.Repeat("x", 2048)
+	v, err := j.Evaluate(context.Background(), m)
+	if err != nil || v.Action != stage.Keep || len(v.Labels) != 1 || v.Labels[0] != "review" || calls.Load() != 0 || strings.Contains(v.Reason, m.Body) {
+		t.Fatalf("verdict %+v error %v calls %d", v, err, calls.Load())
+	}
+
+	p := policy.Policy{Rules: []policy.Rule{{Senders: []string{m.Sender}, Action: stage.Delete, OlderThan: "7d", Hold: true}}}
+	d := p.Decide(policy.Message{Sender: m.Sender, Received: time.Now().AddDate(-1, 0, 0)}, []store.Verdict{{Stage: v.Stage, Labels: v.Labels, Action: v.Action}}, time.Now())
+	if d.Action != stage.Keep {
+		t.Fatalf("oversized input lost protection against expiry: %+v", d)
+	}
+}
+
+func TestInputGuardDefaultsAndConfiguredBoundary(t *testing.T) {
+	var calls atomic.Int32
+	c := jevServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(answer(.99, 0))
+	})
+	j := stage.NewJev("classifier", c, []stage.Question{question}, .5, stage.NewBudget(1))
+	m := msg()
+	m.Body = strings.Repeat("x", stage.DefaultMaxInputBytes)
+	v, err := j.Evaluate(context.Background(), m)
+	if err != nil || v.Action != stage.Keep || calls.Load() != 0 {
+		t.Fatalf("oversized default: %+v %v calls %d", v, err, calls.Load())
+	}
+	m.Body = "Complete message"
+	c.MaxInputBytes = len(stage.State(m))
+	v, err = j.Evaluate(context.Background(), m)
+	if err != nil || len(v.Labels) != 1 || v.Labels[0] != question.Key || calls.Load() != 1 {
+		t.Fatalf("exact boundary: %+v %v calls %d", v, err, calls.Load())
 	}
 }

@@ -2,6 +2,7 @@ package template
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -70,6 +71,12 @@ func (s *Stage) Evaluate(ctx context.Context, m stage.Message) (stage.Verdict, e
 	a, err := s.client.Choose(ctx, s.budget, stage.State(m), stage.Choice{Key: "template", Options: options,
 		Instructions: "Which description fits this email? Choose none unless one clearly fits."})
 	v := stage.Verdict{Stage: s.name, CostUSD: a.Cost, Provenance: "template+jev:" + s.client.Model}
+	if errors.Is(err, stage.ErrInputTooLarge) {
+		v.Labels = []string{Review}
+		v.Action = stage.Keep
+		v.Reason = err.Error()
+		return v, nil
+	}
 	if err != nil {
 		return v, err
 	}

@@ -229,3 +229,39 @@ func TestHoneypotIsOptionalAndHookSettingsAreExplicit(t *testing.T) {
 		}
 	}
 }
+
+func TestModelInputAndQuestionThresholdConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		invalid      bool
+		limit        int
+	}{
+		{"default", "", false, 1048576},
+		{"override", `,"max_input_bytes":262144`, false, 262144},
+		{"negative limit", `,"max_input_bytes":-1`, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"stages":[{"name":"schedule","type":"jev"` + tc.fields + `,"questions":[{"key":"past","instructions":"Today is {today}; are all dates past?","criteria_true":"all dated items expired","criteria_false":"any future or unclear date","threshold":0.9}]}]}`
+			c, err := config.LoadStages(writeStages(t, body))
+			if tc.invalid {
+				if err == nil {
+					t.Fatal("invalid definition accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			d, _ := c.Stage("schedule")
+			if d.MaxInputBytes != tc.limit || d.Questions[0].Threshold != .9 {
+				t.Fatalf("definition %+v", d)
+			}
+		})
+	}
+	for _, threshold := range []string{"-0.1", "1.01"} {
+		body := `{"stages":[{"name":"schedule","type":"jev","question":{"key":"past","instructions":"i","criteria_true":"t","criteria_false":"f","threshold":` + threshold + `}}]}`
+		if _, err := config.LoadStages(writeStages(t, body)); err == nil {
+			t.Fatal("invalid question threshold accepted")
+		}
+	}
+}

@@ -21,8 +21,12 @@ var ErrBudget = errors.New("budget exhausted")
 // DecisionsURL is OpenRouter's Decisions endpoint.
 const DecisionsURL = "https://openrouter.ai/api/alpha/decisions"
 
-// maxStateChars bounds the message text sent to the model.
-const maxStateChars = 6000
+// DefaultMaxInputBytes guards exceptionally large model inputs without truncating them.
+// It is a byte limit, not a model token-context estimate.
+const DefaultMaxInputBytes = 1 << 20
+
+// ErrInputTooLarge prevents model calls on an incomplete or excessive input.
+var ErrInputTooLarge = errors.New("model input exceeds max_input_bytes; retained for review")
 
 // Budget is a cost cap shared by every call in a run.
 type Budget struct {
@@ -58,10 +62,12 @@ func (b *Budget) charge(cost float64) {
 
 // Question is one yes/no ("noul") decision question.
 type Question struct {
-	Key          string `json:"key"`
-	Instructions string `json:"instructions"`
-	True         string `json:"criteria_true"`
-	False        string `json:"criteria_false"`
+	Key string `json:"key"`
+	// Threshold overrides the stage threshold; zero inherits it.
+	Threshold    float64 `json:"threshold,omitempty"`
+	Instructions string  `json:"instructions"`
+	True         string  `json:"criteria_true"`
+	False        string  `json:"criteria_false"`
 }
 
 // DecisionsError is a non-retryable HTTP failure from the Decisions API.
@@ -90,7 +96,9 @@ type JevClient struct {
 	// ctx is cancelled.
 	Sleep    func(ctx context.Context, d time.Duration) error
 	MaxTries int
-	apiKey   string
+	// MaxInputBytes bounds the complete readable message; zero uses DefaultMaxInputBytes.
+	MaxInputBytes int
+	apiKey        string
 }
 
 // NewJevClient returns a client for model, authenticated with apiKey.
@@ -219,6 +227,13 @@ func (c *JevClient) Choose(ctx context.Context, budget *Budget, state string, q 
 // post sends questions about state and returns the response body, retrying
 // transient failures with backoff.
 func (c *JevClient) post(ctx context.Context, state string, questions map[string]any) ([]byte, error) {
+	limit := c.MaxInputBytes
+	if limit <= 0 {
+		limit = DefaultMaxInputBytes
+	}
+	if len(state) > limit {
+		return nil, fmt.Errorf("%w (%d bytes; limit %d)", ErrInputTooLarge, len(state), limit)
+	}
 	body, err := json.Marshal(map[string]any{"model": c.Model, "state": state, "questions": questions})
 	if err != nil {
 		return nil, err
@@ -322,13 +337,14 @@ func (j *Jev) dated() []Question {
 	r := strings.NewReplacer(todayMark, now().Format(time.DateOnly))
 	out := make([]Question, len(j.questions))
 	for i, q := range j.questions {
-		out[i] = Question{Key: q.Key, Instructions: r.Replace(q.Instructions), True: r.Replace(q.True), False: r.Replace(q.False)}
+		out[i] = q
+		out[i].Instructions, out[i].True, out[i].False = r.Replace(q.Instructions), r.Replace(q.True), r.Replace(q.False)
 	}
 	return out
 }
 
-// NewJev returns a Jev stage. Each score at or above threshold adds its
-// question's key as a label; every call is charged to budget.
+// NewJev returns a Jev stage. Each score at or above its question threshold
+// (or the stage threshold) adds a label; every call is charged to budget.
 func NewJev(name string, client *JevClient, qs []Question, threshold float64, budget *Budget) *Jev {
 	return &Jev{name: name, client: client, questions: qs, threshold: threshold, budget: budget}
 }
@@ -342,6 +358,9 @@ func (j *Jev) Evaluate(ctx context.Context, m Message) (Verdict, error) {
 	}
 	scores, cost, err := j.client.ask(ctx, State(m), j.dated())
 	j.budget.charge(cost)
+	if errors.Is(err, ErrInputTooLarge) {
+		return Verdict{Stage: j.name, Labels: []string{"review"}, Action: Keep, Reason: err.Error(), Provenance: "jev:" + j.client.Model}, nil
+	}
 	if err != nil {
 		return Verdict{Stage: j.name, CostUSD: cost}, err // a failed call may still have been charged
 	}
@@ -354,7 +373,14 @@ func (j *Jev) Evaluate(ctx context.Context, m Message) (Verdict, error) {
 	reasons := make([]string, len(keys))
 	for i, k := range keys {
 		reasons[i] = fmt.Sprintf("%s %.2f", k, scores[k])
-		if scores[k] >= j.threshold {
+		threshold := j.threshold
+		for _, q := range j.questions {
+			if q.Key == k && q.Threshold > 0 {
+				threshold = q.Threshold
+				break
+			}
+		}
+		if scores[k] >= threshold {
 			v.Labels = append(v.Labels, k)
 		}
 	}
@@ -363,12 +389,12 @@ func (j *Jev) Evaluate(ctx context.Context, m Message) (Verdict, error) {
 }
 
 // State renders a message as the text a model reads: headers, then the
-// readable body (see Readable), bounded to maxStateChars.
+// complete readable body (see Readable). The client rejects oversized input;
+// it never makes a decision from a silently truncated message.
 func State(m Message) string {
 	body := Readable(m.Body)
 	if body == "" {
 		body = Readable(m.Preview)
 	}
-	body = truncate(body, maxStateChars) // never splits a multi-byte character
 	return fmt.Sprintf("From: %s\nTo: %s\nDate: %s\nSubject: %s\n\n%s", m.Sender, strings.Join(m.Recipients, ", "), m.Received, m.Subject, body)
 }

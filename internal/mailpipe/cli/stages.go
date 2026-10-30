@@ -165,6 +165,7 @@ func jevClient(ctx context.Context, deps Deps, c config.Stages, d config.StageDe
 	}
 	agentio.RegisterSecret(key)
 	client := stage.NewJevClient(key, d.Model)
+	client.MaxInputBytes = d.MaxInputBytes
 	if d.URL != "" {
 		client.URL = d.URL
 	}

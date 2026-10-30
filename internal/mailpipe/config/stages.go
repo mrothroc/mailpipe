@@ -64,6 +64,7 @@ type StageDef struct {
 	Question       *stage.Question  `json:"question,omitempty"`     // one question...
 	Questions      []stage.Question `json:"questions,omitempty"`    // ...or several, asked in one call
 	Threshold      float64          `json:"threshold,omitempty"`
+	MaxInputBytes  int              `json:"max_input_bytes,omitempty"`
 	Model          string           `json:"model,omitempty"`
 	URL            string           `json:"url,omitempty"`
 	Source         string           `json:"source,omitempty"`       // sender_cache: the stage whose verdicts are reused
@@ -189,6 +190,9 @@ func (d *StageDef) normalize() error {
 			if keys[q.Key] {
 				return fmt.Errorf("jev question key %q is repeated", q.Key)
 			}
+			if q.Threshold < 0 || q.Threshold > 1 {
+				return fmt.Errorf("question %q threshold must be in (0, 1], or omitted", q.Key)
+			}
 			keys[q.Key] = true
 		}
 		return d.jevDefaults(defaultThreshold)
@@ -219,6 +223,12 @@ func (d *StageDef) normalize() error {
 // jevDefaults fills in and checks the threshold and model of a stage that
 // calls Jev.
 func (d *StageDef) jevDefaults(threshold float64) error {
+	if d.MaxInputBytes < 0 {
+		return errors.New("max_input_bytes must be positive, or omitted")
+	}
+	if d.MaxInputBytes == 0 {
+		d.MaxInputBytes = stage.DefaultMaxInputBytes
+	}
 	if d.Threshold == 0 {
 		d.Threshold = threshold
 	}
