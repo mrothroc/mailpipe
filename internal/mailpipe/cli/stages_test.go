@@ -260,3 +260,54 @@ func TestRunLabelledJudgesOnlyMessagesWithThatLabel(t *testing.T) {
 		t.Fatalf("bad --labelled: code %d err %q", code, errOut)
 	}
 }
+
+func TestRunHonorsConfiguredModelInputLimitAndQuestionThreshold(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		limit     int
+		threshold float64
+		calls     int32
+		label     string
+	}{
+		{"oversized keep", 1, .5, 0, "review"},
+		{"question threshold", 1048576, .99, 2, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			srv, calls := jevAPI(t, .0002)
+			e.stagesConfig(srv.URL)
+			e.secrets = map[string]string{"mailpipe-openrouter/default": "sk-or-test-key"}
+			path := os.Getenv("MAILPIPE_STAGES")
+			b, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cfg map[string]any
+			if err = json.Unmarshal(b, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			for _, raw := range cfg["stages"].([]any) {
+				d := raw.(map[string]any)
+				if d["type"] == "jev" {
+					d["max_input_bytes"] = tc.limit
+					d["question"].(map[string]any)["threshold"] = tc.threshold
+				}
+			}
+			b, _ = json.Marshal(cfg)
+			if err = os.WriteFile(path, b, 0600); err != nil {
+				t.Fatal(err)
+			}
+			e.run("sync")
+			code, out, errOut := e.run("run", "political")
+			if code != 0 || calls.Load() != tc.calls {
+				t.Fatalf("code %d out %s error %s calls %d", code, out, errOut, calls.Load())
+			}
+			if tc.label != "" && !strings.Contains(out, "\t"+tc.label+"\t") {
+				t.Fatalf("missing review label: %s", out)
+			}
+			if tc.label == "" && strings.Contains(out, "\tpolitical_appeal\t") {
+				t.Fatalf("question override ignored: %s", out)
+			}
+		})
+	}
+}

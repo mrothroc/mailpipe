@@ -145,3 +145,16 @@ func TestStageNeedsBodiesOnlyFromSendersWithTemplates(t *testing.T) {
 		t.Fatal("wrong body choice")
 	}
 }
+
+func TestOversizedTemplateInputIsKeptForReviewWithoutFiling(t *testing.T) {
+	var calls atomic.Int32
+	client := jevChoosing(t, "gift-receipt", .99, &calls, nil)
+	client.MaxInputBytes = 1024
+	st := template.NewStage("template", mustParse(t, giftJSON), client, .7, stage.NewBudget(1), pacific)
+	m := giftMessage()
+	m.Body += strings.Repeat(" x", 2048)
+	v, err := st.Evaluate(context.Background(), m)
+	if err != nil || v.Action != stage.Keep || !reflect.DeepEqual(v.Labels, []string{template.Review}) || calls.Load() != 0 {
+		t.Fatalf("verdict %+v error %v calls %d", v, err, calls.Load())
+	}
+}

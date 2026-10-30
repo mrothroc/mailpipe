@@ -29,3 +29,13 @@ Stages are defined in the private `~/mail/stages.json`; `examples/stages.example
 - **The latest verdict of each stage counts.** Rerunning a stage supersedes its earlier verdicts. So an owner's decision is never recorded as a stage verdict that a rerun could overwrite; filing decisions go to the `filing` stage (see [filing.md](filing.md)).
 - **Paid stages stop at `--max-cost-usd`,** checked before each call. A typical Jev call costs a few thousandths of a cent, so a cap of a few cents covers a day's mail.
 - **Bodies are fetched only when a stage needs them,** and are cached in the store. A stage can choose per message (`stage.BodyChooser`). The template stage fetches none for senders without a template.
+
+## Model input and conservative decisions
+
+Jev and template stages send the complete readable message, including headers and dates at the end. URL noise is removed; message text is never silently truncated. `max_input_bytes` on either stage sets the maximum readable message size, including headers. The default is 1 MiB (1,048,576 bytes), not a token count or a guarantee that every model accepts that input. Configure a lower limit for smaller models or a higher limit when appropriate.
+
+An input over the limit makes no model call. The stage records a `review` label and a `keep` action, so other deletion rules cannot turn partial evidence into a deletion. Template inputs over the limit also appear in the filing review queue and cannot produce a filing match. Inspect or split exceptionally long messages before rerunning them. Normal model API errors remain errors; they are never silently retried with shortened text.
+
+Each Jev question can set its own `threshold`, overriding the stage threshold. An omitted or zero question threshold inherits the stage setting. For destructive classifications, require strong evidence for the deletion label and use a lower threshold for a protective label. A policy rule's `unless` must reference that protective label, so conflicting results retain the message.
+
+For date-based expiry, ask whether **all** relevant events, deadlines and action items are over. A newsletter may mix completed events with future registrations or contain unclear dates. Any upcoming or ongoing item should prevent expiry, and missing or ambiguous dates should not establish that a message is expired. Use a separate uncertainty label as an additional `unless` guard on both event-completion rules and age-based event expiry. Test borderline scores, conflicting answers, mixed dates, and long messages with important information near the end using invented fixtures. Mock-model tests verify the application boundaries; they do not establish a live model's date reasoning accuracy.
