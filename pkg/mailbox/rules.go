@@ -41,7 +41,7 @@ func sendersValid(senders []string) error {
 	}
 	for _, s := range senders {
 		address, err := mail.ParseAddress(s)
-		if err != nil || address.Address != strings.TrimSpace(s) || strings.ContainsAny(s, "\r\n") {
+		if err != nil || address.Address != s || s != strings.TrimSpace(s) || strings.ContainsAny(s, "\r\n") {
 			return errors.New("native rule: each sender must be one exact email address without a display name")
 		}
 	}

@@ -922,3 +922,117 @@ func rejected(t *testing.T, err error, kind string) {
 		unsupported(t, err)
 	}
 }
+
+func TestProviderContractWhitespaceValidation(t *testing.T) {
+	ctx := context.Background()
+	scope := state().Memberships[0].Collection
+	t.Run("blank cursor tokens are rejected", func(t *testing.T) {
+		for _, tc := range []struct{ name, token string }{
+			{"ASCII spaces", "   "},
+			{"ASCII controls", "\t\r\n"},
+			{"Unicode no break space", "\u00a0"},
+			{"Unicode em space", "\u2003"},
+			{"mixed whitespace", " \t\u00a0\u2003\n"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cursor := mailbox.Cursor{AccountID: account, CollectionID: scope.CollectionID, Token: tc.token}
+				if err := cursor.Validate(scope); err == nil {
+					t.Fatal("whitespace-only continuation token accepted")
+				}
+				q := mailbox.SyncRequest{Collection: scope, Cursor: cursor}
+				if err := q.Validate(account); err == nil {
+					t.Fatal("request accepted whitespace-only cursor")
+				}
+				for _, page := range []mailbox.SyncPage{{Mode: mailbox.Snapshot, Next: cursor}, {Mode: mailbox.Snapshot, Complete: true, Checkpoint: cursor}} {
+					if err := page.Validate(scope); err == nil {
+						t.Fatal("page accepted whitespace-only continuation or checkpoint")
+					}
+				}
+				p := newReader()
+				before := clone(p.current)
+				p.syncPages = []mailbox.SyncPage{{Mode: mailbox.Snapshot, Complete: true}}
+				_, err := p.Sync(ctx, q)
+				if err == nil || len(p.syncPages) != 1 || !reflect.DeepEqual(before, p.current) {
+					t.Fatal("blank cursor reached sync or changed state")
+				}
+				if cursor.Token != tc.token {
+					t.Fatal("invalid cursor token was rewritten")
+				}
+			})
+		}
+	})
+	t.Run("nonblank opaque tokens retain exact bytes", func(t *testing.T) {
+		for _, token := range []string{"opaque-token", " \topaque-token \n", "\u00a0opaque-token\u2003"} {
+			cursor := mailbox.Cursor{AccountID: account, CollectionID: scope.CollectionID, Token: token}
+			if err := cursor.Validate(scope); err != nil {
+				t.Fatal(err)
+			}
+			q := mailbox.SyncRequest{Collection: scope, Cursor: cursor}
+			if err := q.Validate(account); err != nil {
+				t.Fatal(err)
+			}
+			p := newReader()
+			p.syncPages = []mailbox.SyncPage{{Mode: mailbox.Delta, Complete: true, Checkpoint: cursor}}
+			page, err := p.Sync(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cursor.Token != token || q.Cursor.Token != token || page.Checkpoint.Token != token {
+				t.Fatal("nonblank opaque token was normalized")
+			}
+		}
+	})
+	t.Run("rule senders reject surrounding whitespace", func(t *testing.T) {
+		sender := "sender@example.org"
+		for _, whitespace := range []struct{ name, value string }{{"ASCII space", " "}, {"ASCII tab", "\t"}, {"Unicode no break space", "\u00a0"}, {"Unicode em space", "\u2003"}} {
+			for _, leading := range []bool{true, false} {
+				side := "trailing"
+				if leading {
+					side = "leading"
+				}
+				t.Run(whitespace.name+"/"+side, func(t *testing.T) {
+					padded := sender + whitespace.value
+					if leading {
+						padded = whitespace.value + sender
+					}
+					creation := mailbox.ReviewedRuleCreation{AccountID: account, ReviewID: 4, SenderAddresses: []string{padded}}
+					if err := creation.Validate(account); err == nil {
+						t.Error("creation accepted sender with surrounding whitespace")
+					}
+					p := &capable{trashOnly: &trashOnly{reader: newReader()}}
+					if _, err := p.CreateRule(ctx, creation); err == nil || len(p.rules) != 0 {
+						t.Error("padded sender created a rule")
+					}
+					// Seed an exact rule separately so deletion tests cannot pass merely
+					// because the earlier creation failed or stored a different sender.
+					p = &capable{trashOnly: &trashOnly{reader: newReader()}}
+					exact := mailbox.ReviewedRuleCreation{AccountID: account, ReviewID: 4, SenderAddresses: []string{sender}}
+					rule, err := p.CreateRule(ctx, exact)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if rule.SenderAddresses[0] != sender {
+						t.Fatal("exact sender changed")
+					}
+					before := append([]mailbox.NativeRule(nil), p.rules...)
+					deletion := mailbox.ReviewedRuleDeletion{AccountID: account, ReviewID: 4, Expected: rule}
+					deletion.Expected.SenderAddresses = []string{padded}
+					if err := deletion.Validate(account); err == nil {
+						t.Error("deletion accepted padded expected sender")
+					}
+					if err := p.DeleteRule(ctx, deletion); err == nil || !reflect.DeepEqual(p.rules, before) {
+						t.Fatal("invalid sender deletion succeeded or changed rules")
+					}
+					if creation.SenderAddresses[0] != padded || deletion.Expected.SenderAddresses[0] != padded {
+						t.Fatal("sender validation normalized input")
+					}
+					// Preserve the successful exact-address deletion path.
+					deletion.Expected = rule
+					if err := p.DeleteRule(ctx, deletion); err != nil || len(p.rules) != 0 {
+						t.Fatalf("exact sender deletion failed: %v", err)
+					}
+				})
+			}
+		}
+	})
+}

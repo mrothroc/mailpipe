@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 )
 
 // Provider is read-only mailbox access. All methods must validate account-bound
@@ -53,7 +54,7 @@ func (c Cursor) Validate(scope CollectionRef) error {
 	if c.CollectionID != scope.CollectionID {
 		return &StaleIdentityError{Operation: "sync cursor", Reason: "collection changed"}
 	}
-	if c.Token == "" {
+	if strings.TrimSpace(c.Token) == "" {
 		return errors.New("sync cursor: token is required")
 	}
 	return nil
