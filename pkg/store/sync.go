@@ -21,9 +21,10 @@ type IMAPEpoch struct {
 // SyncPass is an opaque capability owned by the creating account-aware handle.
 // Reopening another session does not confer the ability to abort its pass.
 type SyncPass struct {
-	id, owner string
-	account   mailbox.Account
-	scope     mailbox.CollectionRef
+	id, owner       string
+	account         mailbox.Account
+	scope           mailbox.CollectionRef
+	actionWatermark int64
 }
 
 func (a *AccountStore) passValid(p SyncPass) error {
@@ -113,6 +114,21 @@ func (a *AccountStore) initializeIMAPEpoch(ctx context.Context, q sqlAccess, sco
 	return e
 }
 
+// actionWatermark uses the append-only local audit sequence, never a provider
+// revision token. Capture all audits so commit only searches the new rowid range.
+func (a *AccountStore) actionWatermark(ctx context.Context, q sqlAccess) (id int64, err error) {
+	err = q.QueryRowContext(ctx, "select coalesce(max(id),0) from actions where account_id=? and provider_id=?", a.account.ID, a.account.ProviderID).Scan(&id)
+	return
+}
+
+// Account-wide invalidation is conservative: an action can change global
+// metadata or create edges in a different snapshot scope. Failures/skips do not
+// change provider state and therefore do not invalidate the pass.
+func (a *AccountStore) successfulActionAfter(ctx context.Context, q sqlAccess, watermark int64) (found bool, err error) {
+	err = q.QueryRowContext(ctx, "select exists(select 1 from actions where id>? and account_id=? and provider_id=? and status=?)", watermark, a.account.ID, a.account.ProviderID, ActionMoved).Scan(&found)
+	return
+}
+
 // BeginSync stages a new pass without changing visible mail or checkpoint.
 func (a *AccountStore) BeginSync(ctx context.Context, c mailbox.Collection, input mailbox.Cursor, epoch *IMAPEpoch) (out SyncPass, err error) {
 	if err = a.scope(c.Ref); err != nil {
@@ -140,7 +156,11 @@ func (a *AccountStore) BeginSync(ctx context.Context, c mailbox.Collection, inpu
 		if input != (mailbox.Cursor{}) && input.Token != token {
 			return stale("checkpoint does not match durable state")
 		}
-		out = SyncPass{id: randomID(), owner: a.owner, account: a.account, scope: c.Ref}
+		watermark, e := a.actionWatermark(ctx, q)
+		if e != nil {
+			return e
+		}
+		out = SyncPass{id: randomID(), owner: a.owner, account: a.account, scope: c.Ref, actionWatermark: watermark}
 		_, e = q.ExecContext(ctx, `insert into sync_passes(id,owner,account_id,provider_id,collection_id,input,generation,epoch) values(?,?,?,?,?,?,?,?)`, out.id, out.owner, a.account.ID, a.account.ProviderID, c.Ref.CollectionID, input.Token, generation, currentEpoch)
 		return e
 	})
@@ -276,6 +296,13 @@ func (a *AccountStore) CommitSync(ctx context.Context, p SyncPass) error {
 		}
 		if !s.complete || s.next != "" || s.mode == "" {
 			return errors.New("store: sync pass has no complete terminal page")
+		}
+		changed, e := a.successfulActionAfter(ctx, q, p.actionWatermark)
+		if e != nil {
+			return e
+		}
+		if changed {
+			return stale("successful action changed the mirror after sync began; reconcile with a fresh pass")
 		}
 		_, generation, epoch, e := a.checkpoint(ctx, q, p.scope)
 		if e != nil {

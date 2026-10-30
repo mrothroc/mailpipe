@@ -247,7 +247,7 @@ func (a *AccountStore) RecordBoundActions(ctx context.Context, attempts []BoundA
 				if e != nil {
 					return e
 				}
-				if e = writeReturnedMetadata(ctx, q, attempt.Local.N, r); e != nil {
+				if e = a.writeReturnedMetadata(ctx, q, attempt.Local, r); e != nil {
 					return e
 				}
 				if _, e = q.ExecContext(ctx, "delete from memberships where n=? and account_id=? and provider_id=?", attempt.Local.N, a.account.ID, a.account.ProviderID); e != nil {

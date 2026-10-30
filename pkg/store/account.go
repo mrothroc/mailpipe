@@ -162,9 +162,8 @@ func (a *AccountStore) upsertMessage(ctx context.Context, q sqlAccess, c mailbox
 	if e := a.putCollection(ctx, q, c); e != nil {
 		return local, e
 	}
-	var oldLocator sql.NullString
 	var valid bool
-	e := q.QueryRowContext(ctx, "select n,locator,identity_valid from messages where account_id=? and provider_id=? and provider_message_id=?", a.account.ID, a.account.ProviderID, r.Message.Ref.MessageID).Scan(&local.N, &oldLocator, &valid)
+	e := q.QueryRowContext(ctx, "select n,identity_valid from messages where account_id=? and provider_id=? and provider_message_id=?", a.account.ID, a.account.ProviderID, r.Message.Ref.MessageID).Scan(&local.N, &valid)
 	existed := e == nil
 	if e != nil && !errors.Is(e, sql.ErrNoRows) {
 		return local, e
@@ -256,8 +255,13 @@ func (a *AccountStore) upsertMessage(ctx context.Context, q sqlAccess, c mailbox
 	}
 	return local, projectMembership(ctx, q, local.N)
 }
+
+// Correlate the complete membership key for indexed probes, even though N is
+// globally unique within this single-account database.
+const membershipProjection = `removed=not exists(select 1 from memberships where account_id=messages.account_id and provider_id=messages.provider_id and n=messages.n),folder=case when (select count(*) from memberships where account_id=messages.account_id and provider_id=messages.provider_id and n=messages.n)=1 then (select collection_id from memberships where account_id=messages.account_id and provider_id=messages.provider_id and n=messages.n) else '' end`
+
 func projectMembership(ctx context.Context, q sqlAccess, n int64) error {
-	_, e := q.ExecContext(ctx, `update messages set removed=not exists(select 1 from memberships where n=?),folder=case when (select count(*) from memberships where n=?)=1 then (select collection_id from memberships where n=?) else '' end where n=?`, n, n, n, n)
+	_, e := q.ExecContext(ctx, "update messages set "+membershipProjection+" where n=?", n)
 	return e
 }
 
@@ -377,13 +381,13 @@ func (a *AccountStore) accountWhere(f AccountFilter, extra string, args []any) (
 		return "", nil, errors.New("store: use collection identity instead of a legacy folder filter")
 	}
 	w, whereArgs := where(f.Filter)
-	w += " and account_id=? and provider_id=? and identity_valid=1 and exists(select 1 from memberships where memberships.n=messages.n)"
+	w += " and account_id=? and provider_id=? and identity_valid=1 and exists(select 1 from memberships where memberships.account_id=messages.account_id and memberships.provider_id=messages.provider_id and memberships.n=messages.n)"
 	whereArgs = append(whereArgs, a.account.ID, a.account.ProviderID)
 	if f.Collection != nil {
 		if e := a.scope(*f.Collection); e != nil {
 			return "", nil, e
 		}
-		w += " and exists(select 1 from memberships where memberships.n=messages.n and collection_id=?)"
+		w += " and exists(select 1 from memberships where memberships.account_id=messages.account_id and memberships.provider_id=messages.provider_id and memberships.n=messages.n and collection_id=?)"
 		whereArgs = append(whereArgs, f.Collection.CollectionID)
 	}
 	if extra != "" {
@@ -548,6 +552,9 @@ func (a *AccountStore) InvalidateIMAPEpoch(ctx context.Context, scope mailbox.Co
 			return e
 		}
 		if _, e = q.ExecContext(ctx, "delete from memberships where account_id=? and provider_id=? and collection_id=?", a.account.ID, a.account.ProviderID, scope.CollectionID); e != nil {
+			return e
+		}
+		if _, e = q.ExecContext(ctx, "update messages set "+membershipProjection+" where account_id=? and provider_id=? and n in(select n from imap_locators where account_id=? and provider_id=? and collection_id=? and epoch_generation=?)", a.account.ID, a.account.ProviderID, a.account.ID, a.account.ProviderID, scope.CollectionID, info.EpochGeneration); e != nil {
 			return e
 		}
 		if _, e = q.ExecContext(ctx, "update collections set mailbox_id=?,uidvalidity=?,epoch_generation=epoch_generation+1 where account_id=? and provider_id=? and collection_id=?", mailboxID, validity, a.account.ID, a.account.ProviderID, scope.CollectionID); e != nil {

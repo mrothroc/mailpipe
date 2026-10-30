@@ -57,7 +57,7 @@ func (a *AccountStore) LatestVerdicts(ctx context.Context, f AccountFilter) (out
 func (a *AccountStore) LatestBySender(ctx context.Context, stage string) (out map[string][]Verdict, err error) {
 	out = map[string][]Verdict{}
 	err = a.transaction(ctx, func(q sqlAccess) error {
-		rows, e := q.QueryContext(ctx, `select v.id,v.n,v.stage,v.labels,v.scores,v.action,v.reason,v.cost_usd,v.final,v.provenance,v.error,v.at,lower(trim(m.sender)) from verdicts v join(select n,max(id) id from verdicts where stage=? and error='' group by n) latest on latest.id=v.id join messages m on m.n=v.n where m.account_id=? and m.provider_id=? and m.identity_valid=1 and m.removed=0 and trim(coalesce(m.sender,''))<>'' and exists(select 1 from memberships ms where ms.n=m.n) order by v.n`, stage, a.account.ID, a.account.ProviderID)
+		rows, e := q.QueryContext(ctx, `select v.id,v.n,v.stage,v.labels,v.scores,v.action,v.reason,v.cost_usd,v.final,v.provenance,v.error,v.at,lower(trim(m.sender)) from verdicts v join(select n,max(id) id from verdicts where stage=? and error='' group by n) latest on latest.id=v.id join messages m on m.n=v.n where m.account_id=? and m.provider_id=? and m.identity_valid=1 and m.removed=0 and trim(coalesce(m.sender,''))<>'' and exists(select 1 from memberships ms where ms.account_id=m.account_id and ms.provider_id=m.provider_id and ms.n=m.n) order by v.n`, stage, a.account.ID, a.account.ProviderID)
 		if e != nil {
 			return e
 		}
@@ -138,7 +138,13 @@ func (a *AccountStore) Moved(ctx context.Context, id int64) (out map[int64]bool,
 
 // writeReturnedMetadata updates compatibility projections as well as the full
 // provider metadata, so filters never use stale read flags after a logged move.
-func writeReturnedMetadata(ctx context.Context, q sqlAccess, n int64, s mailbox.State) error {
+func (a *AccountStore) writeReturnedMetadata(ctx context.Context, q sqlAccess, ref mailbox.LocalRef, s mailbox.State) error {
+	if e := a.local(ref); e != nil {
+		return e
+	}
+	if e := s.Validate(a.account.ID); e != nil {
+		return e
+	}
 	raw, e := jsonText(s.Metadata)
 	if e != nil {
 		return e
@@ -155,6 +161,16 @@ func writeReturnedMetadata(ctx context.Context, q sqlAccess, n int64, s mailbox.
 	if !s.Metadata.Received.IsZero() {
 		received = s.Metadata.Received.UTC().Format(receivedLayout)
 	}
-	_, e = q.ExecContext(ctx, `update messages set locator=?,revision=?,metadata=?,internet_message_id=?,received=?,sender=?,sender_name=?,recipients=?,subject=?,preview=?,has_attachments=?,is_read=? where n=?`, s.Ref.Locator, s.Revision, raw, s.Metadata.InternetMessageID, received, strings.ToLower(s.Metadata.Sender.Address), s.Metadata.Sender.Name, string(rs), s.Metadata.Subject, s.Metadata.Preview, s.Metadata.HasAttachments, s.Metadata.IsRead, n)
-	return e
+	result, e := q.ExecContext(ctx, `update messages set locator=?,revision=?,metadata=?,internet_message_id=?,received=?,sender=?,sender_name=?,recipients=?,subject=?,preview=?,has_attachments=?,is_read=? where n=? and account_id=? and provider_id=?`, s.Ref.Locator, s.Revision, raw, s.Metadata.InternetMessageID, received, strings.ToLower(s.Metadata.Sender.Address), s.Metadata.Sender.Name, string(rs), s.Metadata.Subject, s.Metadata.Preview, s.Metadata.HasAttachments, s.Metadata.IsRead, ref.N, a.account.ID, a.account.ProviderID)
+	if e != nil {
+		return e
+	}
+	count, e := result.RowsAffected()
+	if e != nil {
+		return e
+	}
+	if count != 1 {
+		return stale("returned message is not attributed to this account/provider")
+	}
+	return nil
 }

@@ -251,3 +251,221 @@ func TestSyncValidationAndAbandonedCleanup(t *testing.T) {
 		t.Fatalf("cleanup implied absence %d %v", n, e)
 	}
 }
+
+func TestSyncRejectsInterveningSuccessfulAction(t *testing.T) {
+	for _, timing := range []string{"before stage", "after stage"} {
+		for _, effect := range []string{"upsert", "absence", "removal"} {
+			t.Run(timing+"/"+effect, func(t *testing.T) {
+				ctx := context.Background()
+				path := inventedPath(t)
+				a, e := OpenAccount(ctx, path, fixtureAccount)
+				if e != nil {
+					t.Fatal(e)
+				}
+				defer a.Close()
+				b, e := OpenAccount(ctx, path, fixtureAccount)
+				if e != nil {
+					t.Fatal(e)
+				}
+				defer b.Close()
+				inbox, label, trash := fixtureCollection("inbox"), fixtureCollection("label"), fixtureCollection("trash")
+				r := fixtureRecord("action-sync")
+				r.Revision = "opaque-z"
+				ref, e := a.UpsertMessage(ctx, inbox, r)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = a.AddMembership(ctx, ref, label); e != nil {
+					t.Fatal(e)
+				}
+				scope := inbox
+				if effect == "absence" {
+					scope = trash
+				}
+				if effect == "removal" {
+					scope = label
+				}
+				before := mailbox.Cursor{AccountID: fixtureAccount.ID, CollectionID: scope.Ref.CollectionID, Token: "before-action"}
+				seed, e := a.BeginSync(ctx, scope, mailbox.Cursor{}, nil)
+				if e != nil {
+					t.Fatal(e)
+				}
+				seedPage := mailbox.SyncPage{Mode: mailbox.Snapshot, Complete: true, Checkpoint: before}
+				var seedRecords []MessageRecord
+				if scope.Ref != trash.Ref {
+					seedPage.Messages = []mailbox.Message{r.Message}
+					seedRecords = []MessageRecord{r}
+				}
+				if e = a.StagePage(ctx, seed, mailbox.Cursor{}, seedPage, seedRecords); e != nil {
+					t.Fatal(e)
+				}
+				if e = a.CommitSync(ctx, seed); e != nil {
+					t.Fatal(e)
+				}
+				input := before
+				if effect == "absence" {
+					input = mailbox.Cursor{}
+				}
+				pass, e := a.BeginSync(ctx, scope, input, nil)
+				if e != nil {
+					t.Fatal(e)
+				}
+				terminal := before
+				terminal.Token = "stale-terminal"
+				page := mailbox.SyncPage{Mode: mailbox.Delta, Complete: true, Checkpoint: terminal}
+				var supplements []MessageRecord
+				if effect == "upsert" {
+					fresh := fixtureRecord("only-staged")
+					page.Messages = []mailbox.Message{fresh.Message, r.Message}
+					supplements = []MessageRecord{fresh, r}
+				}
+				if effect == "absence" {
+					page.Mode = mailbox.Snapshot
+				}
+				if effect == "removal" {
+					page.Removed = []mailbox.MessageRef{r.Message.Ref}
+				}
+				id, e := b.CreateBoundPlan(ctx, "move", []PlanItem{{N: ref.N, Action: "delete"}})
+				if e != nil {
+					t.Fatal(e)
+				}
+				reviewed, e := b.LoadReviewedAction(ctx, id, ref, fixtureAccount)
+				if e != nil {
+					t.Fatal(e)
+				}
+				result := reviewed.Expected
+				result.Revision = "opaque-a"
+				result.Metadata.Subject = "returned after action"
+				result.Metadata.IsRead = true
+				result.Memberships = []mailbox.Membership{{Collection: trash.Ref}, {Collection: label.Ref}}
+				act := func() {
+					t.Helper()
+					if e = b.RecordBoundActions(ctx, []BoundAction{{PlanID: id, Local: ref, Expected: reviewed.Expected, Result: &result, Action: "delete", Status: ActionMoved}}); e != nil {
+						t.Fatal(e)
+					}
+				}
+				if timing == "before stage" {
+					act()
+				}
+				if e = a.StagePage(ctx, pass, input, page, supplements); e != nil {
+					t.Fatal(e)
+				}
+				if timing == "after stage" {
+					act()
+				}
+				if e = a.CommitSync(ctx, pass); !errors.Is(e, mailbox.ErrStaleIdentity) {
+					t.Fatalf("stale %s pass overwrote action; want typed reconciliation error, got %v", effect, e)
+				}
+				assertState := func() {
+					t.Helper()
+					m, e := a.GetMessage(ctx, ref)
+					want, _ := jsonText(canonicalState(result))
+					got, _ := jsonText(canonicalState(m.State))
+					if e != nil || got != want {
+						t.Fatalf("action state changed: %+v %v", m, e)
+					}
+				}
+				assertState()
+				if cursor, e := a.Checkpoint(ctx, scope.Ref); e != nil || cursor != before {
+					t.Fatalf("rejected pass published checkpoint: %+v %v", cursor, e)
+				}
+				var count int
+				if e = a.store.db.QueryRowContext(ctx, "select count(*) from messages where provider_message_id='only-staged'").Scan(&count); e != nil || count != 0 {
+					t.Fatalf("partial page publication: %d %v", count, e)
+				}
+				if audits, e := a.Actions(ctx, id); e != nil || len(audits) != 1 || audits[0].Result == nil {
+					t.Fatalf("audit damaged: %+v %v", audits, e)
+				}
+				if e = a.AbortSync(ctx, pass); e != nil {
+					t.Fatal(e)
+				}
+				current := mailbox.Message{Ref: result.Ref, Metadata: result.Metadata}
+				recovery := mailbox.SyncPage{Mode: mailbox.Snapshot, Complete: true, Checkpoint: terminal}
+				recovery.Checkpoint.Token = "fresh-terminal"
+				var extra []MessageRecord
+				if effect != "upsert" {
+					recovery.Messages = []mailbox.Message{current}
+					extra = []MessageRecord{{Message: current, Revision: result.Revision}}
+				}
+				fresh, e := a.BeginSync(ctx, scope, mailbox.Cursor{}, nil)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = a.StagePage(ctx, fresh, mailbox.Cursor{}, recovery, extra); e != nil {
+					t.Fatal(e)
+				}
+				if e = a.CommitSync(ctx, fresh); e != nil {
+					t.Fatalf("fresh evidence cannot recover: %v", e)
+				}
+				assertState()
+				if cursor, e := a.Checkpoint(ctx, scope.Ref); e != nil || cursor != recovery.Checkpoint {
+					t.Fatalf("fresh checkpoint: %+v %v", cursor, e)
+				}
+			})
+		}
+	}
+}
+
+func TestSyncActionAuditControls(t *testing.T) {
+	for _, outcome := range []string{ActionFailed, ActionSkipped, "rolled-back success"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx := context.Background()
+			a, e := OpenAccount(ctx, inventedPath(t), fixtureAccount)
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer a.Close()
+			scope := fixtureCollection("inbox")
+			r := fixtureRecord("audit-control")
+			ref, e := a.UpsertMessage(ctx, scope, r)
+			if e != nil {
+				t.Fatal(e)
+			}
+			pass, e := a.BeginSync(ctx, scope, mailbox.Cursor{}, nil)
+			if e != nil {
+				t.Fatal(e)
+			}
+			terminal := mailbox.Cursor{AccountID: fixtureAccount.ID, CollectionID: scope.Ref.CollectionID, Token: "control-terminal"}
+			if e = a.StagePage(ctx, pass, mailbox.Cursor{}, mailbox.SyncPage{Mode: mailbox.Snapshot, Messages: []mailbox.Message{r.Message}, Complete: true, Checkpoint: terminal}, nil); e != nil {
+				t.Fatal(e)
+			}
+			id, e := a.CreateBoundPlan(ctx, "audit control", []PlanItem{{N: ref.N, Action: "delete"}})
+			if e != nil {
+				t.Fatal(e)
+			}
+			reviewed, e := a.LoadReviewedAction(ctx, id, ref, fixtureAccount)
+			if e != nil {
+				t.Fatal(e)
+			}
+			attempt := BoundAction{PlanID: id, Local: ref, Expected: reviewed.Expected, Action: "delete", Status: outcome}
+			wantAudits := 1
+			if outcome == "rolled-back success" {
+				result := reviewed.Expected
+				result.Memberships = nil
+				attempt.Status = ActionMoved
+				attempt.Result = &result
+				invalid := attempt
+				invalid.Status = "invalid"
+				if e = a.RecordBoundActions(ctx, []BoundAction{attempt, invalid}); e == nil {
+					t.Fatal("invalid batch succeeded")
+				}
+				wantAudits = 0
+			} else if e = a.RecordBoundActions(ctx, []BoundAction{attempt}); e != nil {
+				t.Fatal(e)
+			}
+			if audits, e := a.Actions(ctx, id); e != nil || len(audits) != wantAudits {
+				t.Fatalf("audit transaction: %+v %v", audits, e)
+			}
+			if e = a.CommitSync(ctx, pass); e != nil {
+				t.Fatalf("noncommitted/nonmutating action invalidated pass: %v", e)
+			}
+			if cursor, e := a.Checkpoint(ctx, scope.Ref); e != nil || cursor != terminal {
+				t.Fatalf("control checkpoint: %+v %v", cursor, e)
+			}
+			m, e := a.GetMessage(ctx, ref)
+			if e != nil || len(m.State.Memberships) != 1 || m.State.Memberships[0].Collection != scope.Ref {
+				t.Fatalf("action control changed mirror: %+v %v", m, e)
+			}
+		})
+	}
+}

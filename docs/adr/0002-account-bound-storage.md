@@ -64,6 +64,8 @@ memberships are edges: adding/removing one label does not duplicate a message or
 erase other edges, cached content, verdicts or history. IMAP tuples retain mailbox,
 UIDVALIDITY, UID and a monotonic collection generation. An epoch reset retires
 old identities/checkpoints while preserving their local numbers and audit data.
+Detaching the old epoch's edges and updating the folder/removed projections are
+one transaction, including when zero or multiple unrelated memberships remain.
 New occurrences need new proven provider identities; numeric UID reuse cannot
 resurrect an old plan.
 
@@ -101,7 +103,15 @@ pending items need fresh inspection and review.
 
 Provider sync stages complete pages privately. Only a validated terminal pass can
 publish upserts, scope-limited removals and its checkpoint in one transaction.
-Generation checks reject concurrent stale passes and changed epochs. A zero
+Generation checks reject concurrent stale passes and changed epochs. The
+session-owned pass capability also captures the latest local action audit ID at
+begin. Commit checks the subsequent audit ID range for successful account actions
+in the same transaction as publication; an intervening successful action requires
+fresh evidence for the whole pass. This conservatively covers global metadata,
+explicit removals and absence in other collection scopes. Failed/skipped attempts
+and rolled-back batches do not invalidate a pass. Provider revisions remain
+opaque and are never ordered. This adds no schema or reopen adoption path:
+reopened sessions cannot assume ownership of another session's capability. A zero
 terminal cursor clears the old token. Ordinary reopen preserves another session's
 staging; only exclusive quiescent cleanup discards abandoned passes.
 

@@ -3,9 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
+	"modernc.org/sqlite"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -732,5 +736,329 @@ func testIMAPScopeTypeSafety(t *testing.T) {
 	}
 	if e = a.AddMembership(ctx, ref, other); !errors.Is(e, mailbox.ErrStaleIdentity) {
 		t.Fatalf("generic membership acquired scoped identity %v", e)
+	}
+}
+
+func TestIMAPEpochResetProjections(t *testing.T) {
+	for _, remaining := range []int{0, 1, 2} {
+		t.Run(string(rune('0'+remaining))+" remaining", func(t *testing.T) {
+			ctx := context.Background()
+			a, e := OpenAccount(ctx, inventedPath(t), fixtureAccount)
+			if e != nil {
+				t.Fatal(e)
+			}
+			defer a.Close()
+			inbox := fixtureCollection("inbox")
+			r := fixtureRecord("old-occurrence")
+			r.IMAP = &IMAPLocator{CollectionID: inbox.Ref.CollectionID, MailboxID: "mailbox-a", UIDValidity: 10, UID: 4, EpochGeneration: 1}
+			ref, e := a.UpsertMessage(ctx, inbox, r)
+			if e != nil {
+				t.Fatal(e)
+			}
+			for i := 0; i < remaining; i++ {
+				if e = a.AddMembership(ctx, ref, fixtureCollection("label-"+string(rune('a'+i)))); e != nil {
+					t.Fatal(e)
+				}
+			}
+			if e = a.SetBody(ctx, ref, "invented preserved body"); e != nil {
+				t.Fatal(e)
+			}
+			if e = a.AddVerdict(ctx, ref, Verdict{Stage: "category", Labels: []string{"record"}}); e != nil {
+				t.Fatal(e)
+			}
+			id, e := a.CreateBoundPlan(ctx, "before reset", []PlanItem{{N: ref.N, Action: "delete"}})
+			if e != nil {
+				t.Fatal(e)
+			}
+			reviewed, e := a.LoadReviewedAction(ctx, id, ref, fixtureAccount)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = a.RecordBoundActions(ctx, []BoundAction{{PlanID: id, Local: ref, Expected: reviewed.Expected, Action: "delete", Status: ActionFailed}}); e != nil {
+				t.Fatal(e)
+			}
+			if e = a.InvalidateIMAPEpoch(ctx, inbox.Ref, "mailbox-a", 11); e != nil {
+				t.Fatal(e)
+			}
+			var removed bool
+			var folder string
+			if e = a.store.db.QueryRowContext(ctx, "select removed,folder from messages where n=?", ref.N).Scan(&removed, &folder); e != nil {
+				t.Fatal(e)
+			}
+			wantFolder := ""
+			if remaining == 1 {
+				wantFolder = "label-a"
+			}
+			if removed != (remaining == 0) || folder != wantFolder {
+				t.Errorf("stale projection: removed=%v folder=%q, remaining=%d", removed, folder, remaining)
+			}
+			m, e := a.GetMessage(ctx, ref)
+			if e != nil || m.Valid || len(m.State.Memberships) != remaining || m.Body == nil || *m.Body != "invented preserved body" {
+				t.Fatalf("reset lost identity/history: %+v %v", m, e)
+			}
+			if vs, e := a.Verdicts(ctx, ref); e != nil || len(vs) != 1 {
+				t.Fatalf("verdict history: %+v %v", vs, e)
+			}
+			if history, e := a.PlanHistory(ctx, id); e != nil || len(history.Items) != 1 {
+				t.Fatalf("plan history: %+v %v", history, e)
+			}
+			if actions, e := a.Actions(ctx, id); e != nil || len(actions) != 1 || actions[0].Audit.Status != ActionFailed {
+				t.Fatalf("action history: %+v %v", actions, e)
+			}
+			if _, e = a.LoadReviewedAction(ctx, id, ref, fixtureAccount); !errors.Is(e, mailbox.ErrStaleIdentity) {
+				t.Fatalf("reset plan still executable: %v", e)
+			}
+		})
+	}
+}
+
+// The driver delegates to the pinned SQLite engine and captures statements from
+// actual exported operations, so planner assertions cannot pass on copied SQL.
+type capturedQuery struct {
+	sql  string
+	args []driver.NamedValue
+}
+type queryCapture struct {
+	sync.Mutex
+	queries []capturedQuery
+}
+type captureDriver struct{ capture *queryCapture }
+
+func (d captureDriver) Open(name string) (driver.Conn, error) {
+	c, e := (&sqlite.Driver{}).Open(name)
+	if e != nil {
+		return nil, e
+	}
+	return &captureConn{Conn: c, capture: d.capture}, nil
+}
+
+type captureConn struct {
+	driver.Conn
+	capture *queryCapture
+}
+
+func (c *captureConn) QueryContext(ctx context.Context, q string, args []driver.NamedValue) (driver.Rows, error) {
+	c.capture.Lock()
+	c.capture.queries = append(c.capture.queries, capturedQuery{q, append([]driver.NamedValue(nil), args...)})
+	c.capture.Unlock()
+	return c.Conn.(driver.QueryerContext).QueryContext(ctx, q, args)
+}
+func TestAccountMembershipQueryPlans(t *testing.T) {
+	ctx := context.Background()
+	path := inventedPath(t)
+	a, e := OpenAccount(ctx, path, fixtureAccount)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	scope := fixtureCollection("inbox")
+	ref, e := a.UpsertMessage(ctx, scope, fixtureRecord("plan-query"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = a.AddVerdict(ctx, ref, Verdict{Stage: "category"}); e != nil {
+		t.Fatal(e)
+	}
+	if e = a.store.db.Close(); e != nil {
+		t.Fatal(e)
+	}
+	capture := &queryCapture{}
+	name := "invented-query-capture-" + randomID()
+	sql.Register(name, captureDriver{capture})
+	db, e := sql.Open(name, sqliteURI(path, "rw", false))
+	if e != nil {
+		t.Fatal(e)
+	}
+	db.SetMaxOpenConns(1)
+	a.store.db = db
+	if _, e = a.Messages(ctx, AccountFilter{Collection: &scope.Ref}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.Count(ctx, AccountFilter{}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.Pending(ctx, AccountFilter{}, "category"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.LatestVerdicts(ctx, AccountFilter{}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.LatestBySender(ctx, "category"); e != nil {
+		t.Fatal(e)
+	}
+	capture.Lock()
+	queries := append([]capturedQuery(nil), capture.queries...)
+	capture.Unlock()
+	checked := 0
+	for _, q := range queries {
+		if !strings.Contains(q.sql, "exists(select 1 from memberships") {
+			continue
+		}
+		checked++
+		args := make([]any, len(q.args))
+		for i, v := range q.args {
+			args[i] = v.Value
+		}
+		rows, e := db.QueryContext(ctx, "explain query plan "+q.sql, args...)
+		if e != nil {
+			t.Fatal(e)
+		}
+		membershipPlans := 0
+		for rows.Next() {
+			var id, parent, unused int
+			var detail string
+			if e = rows.Scan(&id, &parent, &unused, &detail); e != nil {
+				t.Fatal(e)
+			}
+			if strings.Contains(detail, "memberships") || strings.Contains(detail, " ms ") {
+				membershipPlans++
+				t.Log(detail)
+				if !strings.Contains(detail, "SEARCH") || !strings.Contains(detail, "account_id=? AND provider_id=? AND n=?") {
+					t.Errorf("membership predicate scans without the account/provider/N key: %s", detail)
+				}
+			}
+		}
+		if e = rows.Err(); e != nil {
+			t.Fatal(e)
+		}
+		rows.Close()
+		if membershipPlans == 0 {
+			t.Fatalf("membership plan was not exercised: %s", q.sql)
+		}
+	}
+	if checked != 5 {
+		t.Fatalf("expected five exported query paths, captured %d", checked)
+	}
+}
+
+func TestIMAPEpochProjectionFailureRollsBack(t *testing.T) {
+	ctx := context.Background()
+	a, e := OpenAccount(ctx, inventedPath(t), fixtureAccount)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	scope := fixtureCollection("inbox")
+	r := fixtureRecord("projection-rollback")
+	r.IMAP = &IMAPLocator{CollectionID: scope.Ref.CollectionID, MailboxID: "mailbox-a", UIDValidity: 10, UID: 7, EpochGeneration: 1}
+	if _, e = a.UpsertMessage(ctx, scope, r); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = a.store.db.ExecContext(ctx, `create trigger invented_projection_failure before update of removed,folder on messages begin select raise(abort,'invented projection failure'); end`); e != nil {
+		t.Fatal(e)
+	}
+	before, e := logicalDigest(ctx, a.store.db)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = a.InvalidateIMAPEpoch(ctx, scope.Ref, "mailbox-a", 11); e == nil || !strings.Contains(e.Error(), "invented projection failure") {
+		t.Fatalf("projection failure not exercised: %v", e)
+	}
+	after, e := logicalDigest(ctx, a.store.db)
+	if e != nil || before != after {
+		t.Fatalf("failed reset partially committed identity/membership/epoch/checkpoint: %v", e)
+	}
+	if _, e = a.store.db.ExecContext(ctx, "drop trigger invented_projection_failure"); e != nil {
+		t.Fatal(e)
+	}
+	if e = a.InvalidateIMAPEpoch(ctx, scope.Ref, "mailbox-a", 11); e != nil {
+		t.Fatal(e)
+	}
+}
+
+func TestGenericLocatorRotationRetainsIdentity(t *testing.T) {
+	ctx := context.Background()
+	account := fixtureAccount
+	account.ProviderID = "generic"
+	a, e := OpenAccount(ctx, inventedPath(t), account)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	scope := fixtureCollection("inbox")
+	r := fixtureRecord("locator-rotation")
+	ref, e := a.UpsertMessage(ctx, scope, r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = a.SetBody(ctx, ref, "invented preserved body"); e != nil {
+		t.Fatal(e)
+	}
+	id, e := a.CreateBoundPlan(ctx, "old locator", []PlanItem{{N: ref.N, Action: "delete"}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	r.Message.Ref.Locator = "rotated-opaque-route"
+	current, e := a.UpsertMessage(ctx, scope, r)
+	if e != nil || current != ref {
+		t.Fatalf("locator rotation changed identity: %+v %v", current, e)
+	}
+	m, e := a.GetMessage(ctx, ref)
+	if e != nil || m.State.Ref.Locator != r.Message.Ref.Locator || m.Body == nil {
+		t.Fatalf("rotated locator not persisted: %+v %v", m, e)
+	}
+	if _, e = a.LoadReviewedAction(ctx, id, ref, account); !errors.Is(e, mailbox.ErrStaleIdentity) {
+		t.Fatalf("old route remains executable: %v", e)
+	}
+}
+
+func TestReturnedMetadataAttribution(t *testing.T) {
+	ctx := context.Background()
+	a, e := OpenAccount(ctx, inventedPath(t), fixtureAccount)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer a.Close()
+	scope := fixtureCollection("inbox")
+	r := fixtureRecord("scoped-update")
+	ref, e := a.UpsertMessage(ctx, scope, r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	id, e := a.CreateBoundPlan(ctx, "scoped result", []PlanItem{{N: ref.N, Action: "delete"}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	reviewed, e := a.LoadReviewedAction(ctx, id, ref, fixtureAccount)
+	if e != nil {
+		t.Fatal(e)
+	}
+	result := reviewed.Expected
+	result.Metadata.Subject = "must not leak"
+	wrong := ref
+	wrong.AccountID = "account-b"
+	if e = a.RecordBoundActions(ctx, []BoundAction{{PlanID: id, Local: wrong, Expected: reviewed.Expected, Result: &result, Action: "delete", Status: ActionMoved}}); !errors.Is(e, mailbox.ErrAccountMismatch) {
+		t.Fatalf("wrong local account accepted: %v", e)
+	}
+	// Test the private helper's SQL fence independently of its already-validated
+	// caller, using a mismatched private receiver unavailable to API consumers.
+	for _, dimension := range []string{"account", "provider"} {
+		t.Run(dimension, func(t *testing.T) {
+			other := *a
+			local := ref
+			state := result
+			if dimension == "account" {
+				other.account.ID = "account-b"
+				local.AccountID = other.account.ID
+				state.Ref.AccountID = other.account.ID
+				state.Memberships = append([]mailbox.Membership(nil), state.Memberships...)
+				for i := range state.Memberships {
+					state.Memberships[i].Collection.AccountID = other.account.ID
+				}
+			} else {
+				other.account.ProviderID = "other-provider"
+			}
+			err := a.transaction(ctx, func(q sqlAccess) error { return other.writeReturnedMetadata(ctx, q, local, state) })
+			if !errors.Is(err, mailbox.ErrStaleIdentity) {
+				t.Fatalf("unattributed helper update succeeded: %v", err)
+			}
+		})
+	}
+	m, e := a.GetMessage(ctx, ref)
+	if e != nil || m.State.Metadata.Subject != r.Message.Metadata.Subject {
+		t.Fatalf("foreign update changed state: %+v %v", m, e)
+	}
+	if audits, e := a.Actions(ctx, id); e != nil || len(audits) != 0 {
+		t.Fatalf("foreign action appended audit: %+v %v", audits, e)
 	}
 }
