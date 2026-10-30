@@ -2,6 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
+	"strings"
 	"time"
 )
 
@@ -33,6 +37,12 @@ type Action struct {
 // transaction, so listings are current before the next sync (which then finds
 // it already there: message ids are immutable).
 func (s *Store) LogActions(ctx context.Context, actions []Action) error {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return guardErr
+	}
+	defer done()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -55,6 +65,12 @@ func (s *Store) LogActions(ctx context.Context, actions []Action) error {
 
 // Moved returns the messages a plan has already moved.
 func (s *Store) Moved(ctx context.Context, planID int64) (map[int64]bool, error) {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer done()
+
 	rows, err := s.db.QueryContext(ctx, "select distinct n from actions where plan_id=? and status=?", planID, ActionMoved)
 	if err != nil {
 		return nil, err
@@ -74,6 +90,12 @@ func (s *Store) Moved(ctx context.Context, planID int64) (map[int64]bool, error)
 // Actions returns a plan's action log in the order it was written. Rows are
 // kept even if their message row is gone, so the audit trail is complete.
 func (s *Store) Actions(ctx context.Context, planID int64) ([]Action, error) {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer done()
+
 	rows, err := s.db.QueryContext(ctx, `select a.id, a.plan_id, a.n, a.graph_id, coalesce(m.sender,''), coalesce(m.subject,''),
 		a.action, a.destination, a.status, a.detail, a.at from actions a left join messages m on m.n=a.n where a.plan_id=? order by a.id`, planID)
 	if err != nil {
@@ -101,6 +123,12 @@ type SenderMoves struct {
 // distinct messages were moved by no_block deletions: mail that was wanted
 // but expired, which must not count against its sender.
 func (s *Store) ExpiredSenders(ctx context.Context) (map[string]int, error) {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer done()
+
 	rows, err := s.db.QueryContext(ctx, `select lower(trim(p.sender)) s, count(distinct p.n) from plan_items p
 		where p.no_block=1 and exists (select 1 from actions a where a.plan_id=p.plan_id and a.n=p.n and a.status=?)
 		group by s`, ActionMoved)
@@ -124,6 +152,12 @@ func (s *Store) ExpiredSenders(ctx context.Context) (map[string]int, error) {
 // distinct messages any plan has moved, ordered by sender. Deletions planned
 // as no_block (mail that merely expired) do not count.
 func (s *Store) MovedSenders(ctx context.Context) ([]SenderMoves, error) {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer done()
+
 	rows, err := s.db.QueryContext(ctx, `select lower(trim(p.sender)) s, count(distinct p.n) from plan_items p
 		where p.no_block=0 and exists (select 1 from actions a where a.plan_id=p.plan_id and a.n=p.n and a.status=?)
 		group by s order by s`, ActionMoved)
@@ -140,4 +174,150 @@ func (s *Store) MovedSenders(ctx context.Context) ([]SenderMoves, error) {
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// BoundAction records a real attempt against exact stored expected state.
+// Result is required for moved status and must preserve proven provider identity.
+type BoundAction struct {
+	PlanID                              int64
+	Local                               mailbox.LocalRef
+	Expected                            mailbox.State
+	Result                              *mailbox.State
+	Action, Destination, Status, Detail string
+}
+
+// BoundActionRecord includes provider evidence as well as the legacy audit row.
+type BoundActionRecord struct {
+	Audit            Action
+	Account          mailbox.Account
+	Generation       int64
+	Expected, Result *mailbox.State
+}
+
+// RecordBoundActions atomically appends attempts and applies successful returned
+// state. A failed local commit cannot manufacture a successful remote outcome.
+func (a *AccountStore) RecordBoundActions(ctx context.Context, attempts []BoundAction) error {
+	return a.transaction(ctx, func(q sqlAccess) error {
+		_, generation, _, e := readBinding(ctx, q)
+		if e != nil {
+			return e
+		}
+		for _, attempt := range attempts {
+			expected, _, action, e := a.planExpected(ctx, q, attempt.PlanID, attempt.Local)
+			if e != nil {
+				return e
+			}
+			if e = attempt.Expected.Validate(a.account.ID); e != nil {
+				return e
+			}
+			stored, _ := jsonText(canonicalState(expected))
+			given, _ := jsonText(canonicalState(attempt.Expected))
+			if given != stored || attempt.Action != action {
+				return stale("attempt does not match stored plan")
+			}
+			if attempt.Status != ActionMoved && attempt.Status != ActionFailed && attempt.Status != ActionSkipped {
+				return errors.New("store: invalid action status")
+			}
+			m, e := a.getMessage(ctx, q, attempt.Local)
+			if e != nil {
+				return e
+			}
+			resultJSON := ""
+			if attempt.Status == ActionMoved {
+				if _, e = a.reviewed(ctx, q, attempt.PlanID, attempt.Local); e != nil {
+					return e
+				}
+				if attempt.Result == nil {
+					return errors.New("store: successful action requires complete returned state")
+				}
+				r := *attempt.Result
+				if e = r.Validate(a.account.ID); e != nil {
+					return e
+				}
+				if r.Ref.MessageID != expected.Ref.MessageID {
+					return stale("changed provider identity requires reconciliation")
+				}
+				if r.Metadata.InternetMessageID != expected.Metadata.InternetMessageID || !strings.EqualFold(strings.TrimSpace(r.Metadata.Sender.Address), strings.TrimSpace(expected.Metadata.Sender.Address)) {
+					return stale("returned message headers changed")
+				}
+				if m.IMAP != nil && r.Ref != expected.Ref {
+					return stale("changed IMAP locator requires reconciliation")
+				}
+				resultJSON, e = jsonText(canonicalState(r))
+				if e != nil {
+					return e
+				}
+				if e = writeReturnedMetadata(ctx, q, attempt.Local.N, r); e != nil {
+					return e
+				}
+				if _, e = q.ExecContext(ctx, "delete from memberships where n=? and account_id=? and provider_id=?", attempt.Local.N, a.account.ID, a.account.ProviderID); e != nil {
+					return e
+				}
+				for _, mem := range r.Memberships {
+					if e = a.putCollection(ctx, q, mailbox.Collection{Ref: mem.Collection}); e != nil {
+						return e
+					}
+					info, e := a.collection(ctx, q, mem.Collection)
+					if e != nil {
+						return e
+					}
+					if info.MailboxID != "" && (m.IMAP == nil || m.IMAP.CollectionID != mem.Collection.CollectionID || m.IMAP.EpochGeneration != info.EpochGeneration) {
+						return stale("another IMAP mailbox requires a distinct occurrence")
+					}
+					if _, e = q.ExecContext(ctx, "insert into memberships values(?,?,?,?)", a.account.ID, a.account.ProviderID, attempt.Local.N, mem.Collection.CollectionID); e != nil {
+						return e
+					}
+				}
+				if e = projectMembership(ctx, q, attempt.Local.N); e != nil {
+					return e
+				}
+			} else if attempt.Result != nil {
+				return errors.New("store: failed or skipped attempt cannot replace current state")
+			}
+			graph := ""
+			if m.GraphID != nil {
+				graph = *m.GraphID
+			}
+			_, e = q.ExecContext(ctx, `insert into actions(plan_id,n,graph_id,action,destination,status,detail,at,account_id,provider_id,binding_generation,expected_state,result_state) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`, attempt.PlanID, attempt.Local.N, graph, attempt.Action, attempt.Destination, attempt.Status, attempt.Detail, time.Now().UTC().Format(time.RFC3339), a.account.ID, a.account.ProviderID, generation, stored, resultJSON)
+			if e != nil {
+				return e
+			}
+		}
+		return nil
+	})
+}
+
+// Actions reads this account's complete ordered audit trail for one plan.
+func (a *AccountStore) Actions(ctx context.Context, planID int64) (out []BoundActionRecord, err error) {
+	err = a.transaction(ctx, func(q sqlAccess) error {
+		rows, e := q.QueryContext(ctx, `select a.id,a.plan_id,a.n,a.graph_id,coalesce(m.sender,''),coalesce(m.subject,''),a.action,a.destination,a.status,a.detail,a.at,a.binding_generation,a.expected_state,a.result_state from actions a left join messages m on m.n=a.n where a.plan_id=? and a.account_id=? and a.provider_id=? order by a.id`, planID, a.account.ID, a.account.ProviderID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r BoundActionRecord
+			r.Account = a.account
+			var expected, result string
+			e = rows.Scan(&r.Audit.ID, &r.Audit.PlanID, &r.Audit.N, &r.Audit.GraphID, &r.Audit.Sender, &r.Audit.Subject, &r.Audit.Action, &r.Audit.Destination, &r.Audit.Status, &r.Audit.Detail, &r.Audit.At, &r.Generation, &expected, &result)
+			if e != nil {
+				return e
+			}
+			if expected != "" {
+				r.Expected = &mailbox.State{}
+				if e = json.Unmarshal([]byte(expected), r.Expected); e != nil {
+					return e
+				}
+			}
+			if result != "" {
+				r.Result = &mailbox.State{}
+				if e = json.Unmarshal([]byte(result), r.Result); e != nil {
+					return e
+				}
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	return
 }

@@ -36,7 +36,7 @@ The table is generated from each package's doc comment (`tools/docgen`). Keep th
 | `pkg/render` | Package render turns an HTML page into a PDF with headless Chrome. |
 | `pkg/rules` | Package rules turns what applied plans deleted into one managed blocklist of server-side Inbox rules, so future mail from those senders goes straight to Deleted Items. |
 | `pkg/stage` | Package stage defines the contract between mailpipe and the stages that judge messages. |
-| `pkg/store` | Package store is the local SQLite mirror of mailbox metadata. |
+| `pkg/store` | Package store persists mailbox metadata, account-bound identities, memberships and reviewed action history in private SQLite databases. |
 | `pkg/template` | Package template recognises the kinds of email a sender sends, so a record can be filed by rule instead of by hand. |
 | `tools/docgen` | Command docgen generates and checks source-derived package documentation. |
 | `tools/security` | Command security checks public files for secrets and verifies Go release support. |
