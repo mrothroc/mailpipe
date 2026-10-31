@@ -6,12 +6,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -820,4 +823,215 @@ func TestIMAPSyncRejectsUIDReuseWithinEpoch(t *testing.T) {
 	if e != nil || after != cp || len(history.State.Memberships) != 0 {
 		t.Fatal("UID reuse resurrected old occurrence/history", e)
 	}
+}
+
+// closeOwnershipProbe wraps a real, verified local TLS connection. Every owned
+// Close is counted before it blocks, making ownership/order assertions exact.
+type closeOwnershipProbe struct {
+	net.Conn
+	calls, active, peak atomic.Int32
+	entered             chan int32
+	release             chan struct{}
+	failure             error
+}
+
+func (p *closeOwnershipProbe) Close() error {
+	call := p.calls.Add(1)
+	active := p.active.Add(1)
+	for old := p.peak.Load(); active > old && !p.peak.CompareAndSwap(old, active); old = p.peak.Load() {
+	}
+	p.entered <- call
+	<-p.release
+	e := p.Conn.Close()
+	p.active.Add(-1)
+	if p.failure != nil {
+		return p.failure
+	}
+	return e
+}
+func TestIMAPSessionCloseOwnership(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		for _, variant := range []string{"success", "failure", "already closed"} {
+			t.Run(fmt.Sprintf("callback_running=%v/%s", running, variant), func(t *testing.T) {
+				_, cfg := localScript(t)
+				client := openClient(t, cfg)
+				parent, finish, e := client.operation(context.Background())
+				if e != nil {
+					t.Fatal(e)
+				}
+				defer finish()
+				s, e := client.connect(parent)
+				if e != nil {
+					t.Fatal(e)
+				}
+				injected := errors.New("invented transport close failure")
+				var expected, errorFromConn error
+				switch variant {
+				case "failure":
+					expected = injected
+					errorFromConn = injected
+				case "already closed":
+					errorFromConn = net.ErrClosed
+				}
+				probe := &closeOwnershipProbe{Conn: s.conn, entered: make(chan int32, 4), release: make(chan struct{}), failure: errorFromConn}
+				s.conn = probe
+				stopped := make(chan bool, 1)
+				realStop := s.stop
+				s.stop = func() bool { result := realStop(); stopped <- result; return result }
+				var releaseOnce sync.Once
+				unblock := func() { releaseOnce.Do(func() { close(probe.release) }) }
+				var workers sync.WaitGroup
+				t.Cleanup(func() { unblock(); s.cancel(); _ = s.close(); workers.Wait() })
+				waitEntry := func() int32 {
+					t.Helper()
+					select {
+					case n := <-probe.entered:
+						return n
+					case <-time.After(5 * time.Second):
+						t.Fatal("owned Close did not reach barrier")
+						return 0
+					}
+				}
+				if running {
+					s.cancel()
+					if n := waitEntry(); n != 1 {
+						t.Fatalf("first callback Close=%d", n)
+					}
+				}
+				returned := make(chan error, 2)
+				callers := 1
+				if running {
+					callers = 2
+				}
+				for range callers {
+					workers.Add(1)
+					go func() { defer workers.Done(); returned <- s.close() }()
+				}
+				if running {
+					select {
+					case result := <-stopped:
+						if result {
+							t.Error("already-running callback was reported stopped")
+						}
+					case n := <-probe.entered:
+						t.Errorf("competing synchronous Close entered while callback owns Close: call=%d", n)
+					case <-time.After(5 * time.Second):
+						t.Fatal("close neither joined nor exposed competing ownership")
+					}
+				} else {
+					if n := waitEntry(); n != 1 {
+						t.Errorf("first synchronous Close=%d", n)
+					}
+					// The Close-entry barrier proves stop must have completed already; this is
+					// a causal check, not a timing guess about callback scheduling.
+					select {
+					case result := <-stopped:
+						if !result {
+							t.Error("live callback was not stopped before synchronous Close")
+						}
+					default:
+						t.Error("synchronous Close began before watcher stop")
+					}
+				}
+				select {
+				case e := <-returned:
+					t.Errorf("close returned before its blocking owner finished: %v", e)
+				case <-probe.entered:
+					t.Error("more than one Close entered before release")
+				default:
+				}
+				unblock()
+				for range callers {
+					select {
+					case e := <-returned:
+						if !errors.Is(e, expected) {
+							t.Errorf("Close error=%v, expected=%v", e, expected)
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatal("close/join worker leaked")
+					}
+				}
+				workers.Wait()
+				if probe.calls.Load() != 1 || probe.peak.Load() != 1 || probe.active.Load() != 0 {
+					t.Errorf("owned closes total=%d peak=%d active=%d", probe.calls.Load(), probe.peak.Load(), probe.active.Load())
+				}
+				if parent.Err() != nil {
+					t.Fatal("session close canceled operation parent")
+				}
+				for range 2 {
+					if e := s.close(); !errors.Is(e, expected) {
+						t.Errorf("idempotent close lost its first result: %v", e)
+					}
+				}
+				if probe.calls.Load() != 1 {
+					t.Error("repeated close reopened cleanup ownership")
+				}
+				if running {
+					select {
+					case <-s.done:
+					default:
+						t.Error("started callback was not joined")
+					}
+				} else {
+					select {
+					case <-s.done:
+						t.Error("stopped callback ran")
+					default:
+					}
+				}
+				original := fault("invented transient preparation failure", true)
+				result := failedSession(s, original)
+				var transient *protocolFault
+				if expected != nil {
+					if result == nil || errors.As(result, &transient) {
+						t.Error("failed cleanup retained unsafe retry authority")
+					}
+				} else if result != original {
+					t.Error("clean cleanup lost original protocol provenance")
+				}
+			})
+		}
+	}
+}
+
+func TestIMAPEnvelopeAddressProjection(t *testing.T) {
+	t.Run("typed incomplete fields are not identities", func(t *testing.T) {
+		input := []*imap.Address{nil, {}, {PersonalName: "Group label", MailboxName: "Group label"}, {PersonalName: "Unqualified label", MailboxName: "local"}, {HostName: "example.org"}, {PersonalName: "Qualified label", MailboxName: "member", HostName: "example.net"}, {MailboxName: "Other", HostName: "example.com"}}
+		want := []mailbox.Address{{Name: "Qualified label", Address: "member@example.net"}, {Address: "Other@example.com"}}
+		if got := addresses(input); !reflect.DeepEqual(got, want) {
+			t.Fatalf("invented or dropped address: got=%+v want=%+v", got, want)
+		}
+	})
+	t.Run("real codec group and NIL envelope fields", func(t *testing.T) {
+		// NIL-host group markers, empty equivalents and malformed half-addresses
+		// surround two real members; none may become a sender or recipient identity.
+		list := `((NIL NIL "Group label" NIL) ("Member label" NIL "member" "example.org") (NIL NIL NIL NIL) (NIL NIL "Empty group label" "") ("Other label" NIL "other" "example.net") (NIL NIL "" "") (NIL NIL "local" "") (NIL NIL "" "example.com") ("Qualified label" NIL "qualified" "example.com"))`
+		envelope := `(NIL "invented" ` + list + ` NIL ` + list + ` ` + list + ` ` + list + ` ` + list + ` NIL "<invented@example.org>")`
+		response := `* 1 FETCH (UID 7 FLAGS () INTERNALDATE "01-Jan-2026 00:00:00 +0000" RFC822.SIZE 0 ENVELOPE ` + envelope + ")\r\n"
+		reader := imap.NewReader(&budgetReader{r: bufio.NewReader(strings.NewReader(response))})
+		reader.MaxLiteralSize = 64 << 10
+		raw, e := imap.ReadResp(reader)
+		if e != nil {
+			t.Fatal(e)
+		}
+		value, ok, e := parseFetch(raw, false)
+		if e != nil || !ok {
+			t.Fatalf("real envelope parse %v", e)
+		}
+		want := []mailbox.Address{{Name: "Member label", Address: "member@example.org"}, {Name: "Other label", Address: "other@example.net"}, {Name: "Qualified label", Address: "qualified@example.com"}}
+		for name, got := range map[string][]mailbox.Address{"From": value.wire.Envelope.From, "ReplyTo": value.wire.Envelope.ReplyTo, "To": value.wire.Envelope.To, "Cc": value.wire.Envelope.Cc, "Bcc": value.wire.Envelope.Bcc} {
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("%s projection got=%+v want=%+v", name, got, want)
+			}
+		}
+		// All-NIL address lists stay absent; they are not an address named '@'.
+		empty, e := imap.ReadResp(imap.NewReader(bufio.NewReader(strings.NewReader("* 1 FETCH (UID 7 FLAGS () INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE 0 ENVELOPE (NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL))\r\n"))))
+		if e != nil {
+			t.Fatal(e)
+		}
+		none, _, e := parseFetch(empty, false)
+		if e != nil || len(none.wire.Envelope.From) != 0 || len(none.wire.Envelope.To) != 0 {
+			t.Fatalf("NIL became address %+v %v", none.wire.Envelope, e)
+		}
+	})
 }

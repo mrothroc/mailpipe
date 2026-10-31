@@ -106,6 +106,7 @@ type session struct {
 	stop             func() bool
 	done             chan struct{}
 	callbackCloseErr error
+	closeErr         error
 	once             sync.Once
 	caps             Capabilities
 	tag              uint64
@@ -115,20 +116,25 @@ type session struct {
 }
 
 func (s *session) close() error {
-	var e error
 	s.once.Do(func() {
+		// Stop before cancellation so exactly one owner closes the transport. A
+		// started callback cannot be stopped: join it and adopt its latched result.
+		stopped := s.stop()
 		s.cancel()
-		e = s.conn.Close()
-		if errors.Is(e, net.ErrClosed) {
-			e = nil
-		}
-		if !s.stop() {
+		if stopped {
+			s.closeErr = s.conn.Close()
+			if errors.Is(s.closeErr, net.ErrClosed) {
+				s.closeErr = nil
+			}
+		} else {
 			<-s.done
-			e = errors.Join(e, s.callbackCloseErr)
+			s.closeErr = s.callbackCloseErr
 		}
 	})
-	return e
+	// Once publishes the same result to concurrent and subsequent callers.
+	return s.closeErr
 }
+
 func (s *session) read() (imap.Resp, error) {
 	s.budget.response = 0
 	r, e := imap.ReadResp(s.reader)

@@ -130,7 +130,10 @@ func parseFetch(r imap.Resp, source bool) (out fetched, isFetch bool, err error)
 func addresses(values []*imap.Address) []mailbox.Address {
 	out := make([]mailbox.Address, 0, len(values))
 	for _, v := range values {
-		if v != nil {
+		// A NIL/empty host denotes structural group syntax, not a mailbox.
+		// The flat projection retains qualified members, never group labels or
+		// incomplete components promoted into a sender/recipient identity.
+		if v != nil && v.MailboxName != "" && v.HostName != "" {
 			out = append(out, mailbox.Address{Name: v.PersonalName, Address: v.MailboxName + "@" + v.HostName})
 		}
 	}
