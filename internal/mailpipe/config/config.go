@@ -1,6 +1,7 @@
 // Package config reads mailpipe's private per-user configuration: the Entra
 // app registration it signs in through (~/mail/config.json) and the stages,
-// policy and owner's addresses (~/mail/stages.json). Both name the user's
+// policy and owner's addresses (~/mail/stages.json), plus verified account and
+// collection routing. These name the user's
 // tenant or real senders, so they live outside any repository with mode 0600,
 // never in code; tokens and API keys stay in the Keychain.
 package config
@@ -18,8 +19,47 @@ import (
 
 // Config is the user's mailpipe configuration.
 type Config struct {
-	ClientID string `json:"client_id"`
-	TenantID string `json:"tenant_id"`
+	ClientID    string                     `json:"client_id"`
+	TenantID    string                     `json:"tenant_id"`
+	Provider    string                     `json:"provider,omitempty"`
+	AccountID   string                     `json:"account_id,omitempty"`
+	Collections map[string]string          `json:"collections,omitempty"`
+	Extra       map[string]json.RawMessage `json:"-"`
+}
+
+func (c *Config) UnmarshalJSON(b []byte) error {
+	type plain Config
+	if err := json.Unmarshal(b, (*plain)(c)); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(b, &c.Extra); err != nil {
+		return err
+	}
+	for _, k := range []string{"client_id", "tenant_id", "provider", "account_id", "collections"} {
+		delete(c.Extra, k)
+	}
+	if len(c.Extra) == 0 {
+		c.Extra = nil
+	}
+	return nil
+}
+
+func (c Config) MarshalJSON() ([]byte, error) {
+	type plain Config
+	b, err := json.Marshal(plain(c))
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(b, &fields); err != nil {
+		return nil, err
+	}
+	for k, v := range c.Extra {
+		if _, known := fields[k]; !known {
+			fields[k] = v
+		}
+	}
+	return json.Marshal(fields)
 }
 
 const (
@@ -48,6 +88,9 @@ func DefaultPath() string {
 }
 
 func (c Config) validate() error {
+	if c.Provider != "" && c.Provider != "graph" {
+		return errors.New("config: unsupported provider; select an installed mailbox provider")
+	}
 	var bad []string
 	if !uuid.MatchString(c.ClientID) {
 		bad = append(bad, "client_id")
@@ -98,11 +141,17 @@ func Save(path string, c Config) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), ".mailpipe-config-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err = f.Write(append(data, '\n')); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

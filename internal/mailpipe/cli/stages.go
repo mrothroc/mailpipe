@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mrothroc/mailpipe/pkg/document"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,7 +82,7 @@ func openRouterItem(c config.Stages) (service, account string) {
 }
 
 // buildStage turns a definition into a runnable stage.
-func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageDef, s *store.Store, maxCost float64) (stage.Stage, error) {
+func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageDef, s *commandStore, maxCost float64) (stage.Stage, error) {
 	switch d.Type {
 	case "allowlist":
 		contacts, err := s.SentRecipients(ctx)
@@ -98,13 +98,17 @@ func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageD
 	case "hook":
 		var source func(context.Context, stage.Message) ([]byte, error)
 		if d.NeedsSource {
-			graphFn := lazyGraph(deps)
+			graphFn := lazyProvider(ctx, deps)
 			source = func(ctx context.Context, m stage.Message) ([]byte, error) {
 				g, err := graphFn()
 				if err != nil {
 					return nil, fatalIfAccess(err)
 				}
-				raw, err := g.Raw(ctx, "/me/messages/"+url.PathEscape(m.GraphID)+"/$value")
+				ref, err := s.remoteRef(ctx, m.N)
+				if err != nil {
+					return nil, err
+				}
+				raw, err := document.ReadSource(ctx, g, ref)
 				return raw, fatalIfAccess(err)
 			}
 		}
@@ -300,7 +304,7 @@ func newRunCommand(deps Deps) *cobra.Command {
 			for i, m := range pending {
 				msgs[i], stored[m.N], pos[m.N] = toStageMessage(m), m, i
 			}
-			graphFn := lazyGraph(deps)
+			graphFn := lazyProvider(ctx, deps)
 			body := func(ctx context.Context, m *stage.Message) error {
 				text, err := messageBody(ctx, s, stored[m.N], graphFn)
 				if err != nil {

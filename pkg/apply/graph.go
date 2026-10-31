@@ -121,3 +121,6 @@ func (m *GraphMailbox) Move(ctx context.Context, ids []string, destination strin
 	}
 	return out, nil
 }
+
+// ChunkSize keeps Graph batch-size knowledge in this explicit adapter.
+func (m *GraphMailbox) ChunkSize() int { return graph.MaxBatch }

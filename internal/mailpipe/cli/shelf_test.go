@@ -49,7 +49,7 @@ func TestABlockSenderIsDeletedAndBlocked(t *testing.T) {
 // blocking deletion of their other mail.
 func TestExpiredMailSparesASenderFromTheBlocklist(t *testing.T) {
 	e := applied(t) // plan 1 (blocking) moved g1 from info@campaign.example.org
-	s, err := store.Open(e.db)
+	s, err := e.boundStore()
 	if err != nil {
 		t.Fatal(err)
 	}

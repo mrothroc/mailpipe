@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestSaveThenLoadRoundTripsWithPrivateModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := config.Load(path)
-	if err != nil || got != want {
+	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Load = %+v, %v", got, err)
 	}
 	for p, mode := range map[string]os.FileMode{path: 0o600, filepath.Dir(path): 0o700} {

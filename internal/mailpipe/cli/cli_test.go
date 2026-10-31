@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +20,7 @@ import (
 	"github.com/mrothroc/mailpipe/internal/mailpipe/cli"
 	"github.com/mrothroc/mailpipe/pkg/graph"
 	"github.com/mrothroc/mailpipe/pkg/keychain"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/msauth"
 	"github.com/mrothroc/mailpipe/pkg/store"
 )
@@ -39,6 +42,7 @@ func TestMain(m *testing.M) {
 type commandCtx struct{}
 
 type fakeAuth struct {
+	subject   msauth.Subject
 	signedIn  bool
 	loggedOut bool
 	err       error // returned by Token, Status and Login when set
@@ -52,6 +56,26 @@ func (f *fakeAuth) Token(context.Context) (string, error) {
 		return "", msauth.ErrNotSignedIn
 	}
 	return "TOKEN", nil
+}
+
+func (f *fakeAuth) Subject(ctx context.Context) (msauth.Subject, error) {
+	if _, err := f.Token(ctx); err != nil {
+		return msauth.Subject{}, err
+	}
+	if f.subject != (msauth.Subject{}) {
+		return f.subject, nil
+	}
+	return msauth.Subject{TenantID: "22222222-2222-4222-8222-222222222222", ObjectID: "33333333-3333-4333-8333-333333333333"}, nil
+}
+func (f *fakeAuth) TokenFor(ctx context.Context, expected msauth.Subject) (string, error) {
+	current, err := f.Subject(ctx)
+	if err != nil {
+		return "", err
+	}
+	if current != expected {
+		return "", msauth.ErrNotSignedIn
+	}
+	return f.Token(ctx)
 }
 
 func (f *fakeAuth) Status(context.Context) (msauth.Status, error) {
@@ -113,6 +137,44 @@ func (g *fakeGraph) Raw(_ context.Context, path string) ([]byte, error) {
 	return []byte(m), nil
 }
 
+func (g *fakeGraph) WriteRaw(ctx context.Context, path string, w io.Writer, limit int64) error {
+	b, err := g.Raw(ctx, path)
+	if err != nil {
+		return err
+	}
+	if int64(len(b)) > limit {
+		return errors.New("invented source exceeds limit")
+	}
+	_, err = w.Write(b)
+	return err
+}
+
+func (g *fakeGraph) message(id string) map[string]any {
+	out := map[string]any{"id": id, "receivedDateTime": "2026-10-20T10:00:00Z"}
+	for _, pages := range g.pages {
+		for _, p := range pages {
+			for _, raw := range p.Value {
+				var m map[string]any
+				_ = json.Unmarshal(raw, &m)
+				if m["id"] == id {
+					out = m
+				}
+			}
+		}
+	}
+	for key, value := range map[string]any{"internetMessageId": "", "subject": "", "toRecipients": []any{}, "ccRecipients": []any{}, "hasAttachments": false, "isRead": false, "bodyPreview": ""} {
+		if _, ok := out[key]; !ok {
+			out[key] = value
+		}
+	}
+	if m, ok := g.server[id]; ok {
+		out["internetMessageId"] = m.imid
+		out["from"] = map[string]any{"emailAddress": map[string]any{"address": m.sender}}
+		out["parentFolderId"] = "F-" + m.folder
+	}
+	return out
+}
+
 type serverMsg struct{ folder, imid, sender string }
 
 func (g *fakeGraph) Pages(_ context.Context, start string, _ url.Values, fn func(graph.Page) error) error {
@@ -131,21 +193,76 @@ func (g *fakeGraph) FolderTotal(_ context.Context, folder string) (int, error) {
 	return g.totals[folder], nil
 }
 
-func (g *fakeGraph) Get(_ context.Context, path string, _ url.Values, out any) error {
+func (g *fakeGraph) Get(_ context.Context, path string, q url.Values, out any) error {
 	if g.getErr != nil {
 		return g.getErr
 	}
-	if folder, ok := strings.CutPrefix(path, "/me/mailFolders/"); ok {
-		return json.Unmarshal([]byte(`{"id":"F-`+folder+`"}`), out)
+	if g.pagesErr != nil && (strings.Contains(path, "/messages/delta") || g.pages[path] != nil) {
+		return g.pagesErr
 	}
-	g.bodyCalls.Add(1)
-	data, _ := json.Marshal(map[string]any{"body": map[string]any{"contentType": "text", "content": g.body}})
-	return json.Unmarshal(data, out)
+	if strings.HasSuffix(path, "/messages/delta") || g.pages[path] != nil || path == "d" || path == "dd" || path == "ds" {
+		path = strings.Replace(path, "/mailFolders/F-", "/mailFolders/", 1)
+		pages := g.pages[path]
+		var page graph.Page
+		if len(pages) > 0 {
+			page = pages[0]
+		}
+		for i, raw := range page.Value {
+			var row map[string]any
+			_ = json.Unmarshal(raw, &row)
+			if _, partial := row["receivedDateTime"]; partial {
+				for key, value := range map[string]any{"ccRecipients": []any{}, "hasAttachments": false, "isRead": false, "bodyPreview": ""} {
+					if _, exists := row[key]; !exists {
+						row[key] = value
+					}
+				}
+				page.Value[i], _ = json.Marshal(row)
+			}
+		}
+		if page.Value == nil {
+			page.Value = []json.RawMessage{}
+		}
+		b, _ := json.Marshal(page)
+		return json.Unmarshal(b, out)
+	}
+	if folder, ok := strings.CutPrefix(path, "/me/mailFolders/"); ok {
+		folder = strings.TrimPrefix(folder, "F-")
+		b, _ := json.Marshal(map[string]any{"id": "F-" + folder, "totalItemCount": g.totals[folder]})
+		return json.Unmarshal(b, out)
+	}
+	if q.Get("$select") == "body" {
+		g.bodyCalls.Add(1)
+		data, _ := json.Marshal(map[string]any{"body": map[string]any{"contentType": "text", "content": g.body}})
+		return json.Unmarshal(data, out)
+	}
+	id := strings.TrimPrefix(path, "/me/messages/")
+	if _, ok := g.server[id]; !ok {
+		found := false
+		for _, pages := range g.pages {
+			for _, p := range pages {
+				for _, raw := range p.Value {
+					var m map[string]any
+					_ = json.Unmarshal(raw, &m)
+					if m["id"] == id {
+						found = true
+					}
+				}
+			}
+		}
+		if !found {
+			return &graph.APIError{Status: 404}
+		}
+	}
+	b, _ := json.Marshal(g.message(id))
+	return json.Unmarshal(b, out)
 }
 
 const rulesPath = "/me/mailFolders/inbox/messageRules"
 
-func (g *fakeGraph) Do(_ context.Context, method, path string, _ url.Values, _ string, body, out any) error {
+func (g *fakeGraph) Do(ctx context.Context, method, path string, q url.Values, _ string, body, out any) error {
+	if method == http.MethodGet && (strings.Contains(path, "/messages/delta") || g.pages[path] != nil || path == "d" || path == "dd" || path == "ds") {
+		return g.Get(ctx, path, q, out)
+	}
 	if g.getErr != nil {
 		return g.getErr
 	}
@@ -169,6 +286,11 @@ func (g *fakeGraph) Do(_ context.Context, method, path string, _ url.Values, _ s
 	case method == http.MethodPost && path == rulesPath:
 		g.ruleSeq++
 		in["id"] = fmt.Sprintf("R%d", g.ruleSeq)
+		for _, r := range g.rules {
+			if ruleSequenceNumber(r["sequence"]) >= ruleSequenceNumber(in["sequence"]) {
+				r["sequence"] = ruleSequenceNumber(r["sequence"]) + 1
+			}
+		}
 		g.rules = append(g.rules, in)
 		return nil
 	case method == http.MethodPatch:
@@ -183,7 +305,13 @@ func (g *fakeGraph) Do(_ context.Context, method, path string, _ url.Values, _ s
 	case method == http.MethodDelete:
 		for i, r := range g.rules {
 			if r["id"] == id {
+				sequence := ruleSequenceNumber(r["sequence"])
 				g.rules = append(g.rules[:i], g.rules[i+1:]...)
+				for _, other := range g.rules {
+					if ruleSequenceNumber(other["sequence"]) > sequence {
+						other["sequence"] = ruleSequenceNumber(other["sequence"]) - 1
+					}
+				}
 				return nil
 			}
 		}
@@ -234,17 +362,17 @@ func (g *fakeGraph) Batch(_ context.Context, reqs []graph.BatchRequest) ([]graph
 		case move && g.moveFail != 0:
 			out[i].Status = g.moveFail
 		case move:
-			dest := r.Body.(map[string]string)["destinationId"]
+			dest := strings.TrimPrefix(r.Body.(map[string]string)["destinationId"], "F-")
 			g.totals[m.folder]--
 			g.totals[dest]++
 			m.folder = dest
 			g.server[id] = m
 			g.moved = append(g.moved, id)
 			out[i].Status = 201
+			out[i].Body, _ = json.Marshal(g.message(id))
 		default:
 			out[i].Status = 200
-			out[i].Body, _ = json.Marshal(map[string]any{"internetMessageId": m.imid, "parentFolderId": "F-" + m.folder,
-				"from": map[string]any{"emailAddress": map[string]any{"address": m.sender}}})
+			out[i].Body, _ = json.Marshal(g.message(id))
 		}
 	}
 	return out, nil
@@ -259,17 +387,24 @@ func msg(id, sender, subject, received string) json.RawMessage {
 }
 
 type env struct {
-	t       *testing.T
-	auth    *fakeAuth
-	graph   *fakeGraph
-	db      string
-	secrets map[string]string // "service/account" -> value
+	provider    mailbox.Provider
+	openAccount func(context.Context, string, mailbox.Account) (*store.AccountStore, error)
+	t           *testing.T
+	auth        *fakeAuth
+	graph       *fakeGraph
+	db          string
+	secrets     map[string]string // "service/account" -> value
 	// brokenStdout makes every write to stdout fail, as a closed pipe does.
 	brokenStdout bool
 	rendered     []string // pages passed to Render
 }
 
 func newEnv(t *testing.T) *env {
+	t.Helper()
+	t.Setenv("MAILPIPE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
+	if err := config.Save(config.DefaultPath(), config.Config{ClientID: "11111111-1111-4111-8111-111111111111", TenantID: "22222222-2222-4222-8222-222222222222"}); err != nil {
+		t.Fatal(err)
+	}
 	return &env{t: t, auth: &fakeAuth{signedIn: true}, db: filepath.Join(t.TempDir(), "mail.db"), graph: &fakeGraph{
 		pages: map[string][]graph.Page{
 			"/me/mailFolders/inbox/messages/delta": {{Value: []json.RawMessage{
@@ -310,6 +445,12 @@ func (e *env) run(args ...string) (int, string, string) {
 			}
 			return "", keychain.ErrNotFound
 		},
+	}
+	if e.openAccount != nil {
+		deps.AccountStore = e.openAccount
+	}
+	if e.provider != nil {
+		deps.Provider = func(context.Context) (mailbox.Provider, error) { return e.provider, nil }
 	}
 	root := cli.NewRootCommand(deps)
 	var stdout, stderr bytes.Buffer
@@ -589,3 +730,13 @@ func TestUnconfiguredSignInIsStaleWithInitHint(t *testing.T) {
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+func ruleSequenceNumber(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
+}

@@ -60,6 +60,7 @@ type Auth struct {
 	client Client
 	scopes []string
 	store  Store
+	tenant string
 }
 
 // New builds an Auth over the real MSAL client, with its cache in store.
@@ -70,7 +71,9 @@ func New(cfg Config, store Store) (*Auth, error) {
 	if err != nil {
 		return nil, fmt.Errorf("msal: %w", err)
 	}
-	return NewWithClient(msalClient{pc}, cfg.Scopes, store), nil
+	a := NewWithClient(msalClient{pc}, cfg.Scopes, store)
+	a.tenant = cfg.TenantID
+	return a, nil
 }
 
 // NewWithClient builds an Auth over any Client (tests use a fake).

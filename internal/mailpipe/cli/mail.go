@@ -2,26 +2,39 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/spf13/cobra"
 
 	"github.com/mrothroc/agentio"
+	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
+	"github.com/mrothroc/mailpipe/pkg/document"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/mailsync"
 	"github.com/mrothroc/mailpipe/pkg/stage"
 	"github.com/mrothroc/mailpipe/pkg/store"
 )
 
-func openStore(cmd *cobra.Command, deps Deps) (*store.Store, error) {
-	s, err := deps.Store(dbPath(cmd))
-	if err != nil {
-		return nil, agentio.NewError("open database: "+err.Error(), "mailpipe --help")
+func openStore(cmd *cobra.Command, deps Deps) (*commandStore, error) {
+	cfg, err := routing()
+	if err != nil && !errors.Is(err, config.ErrNotConfigured) {
+		return nil, err
 	}
-	return s, nil
+	if cfg.AccountID != "" {
+		bound, e := openBound(cmd.Context(), deps, dbPath(cmd), mailbox.Account{ID: mailbox.AccountID(cfg.AccountID), ProviderID: "graph"})
+		if e != nil {
+			return nil, agentio.NewError("open database: "+e.Error(), "mailpipe account bind")
+		}
+		return &commandStore{bound: bound, cfg: cfg}, nil
+	}
+	legacy, e := deps.Store(dbPath(cmd))
+	if e != nil {
+		return nil, agentio.NewError("open database: "+e.Error(), "mailpipe account bind")
+	}
+	return &commandStore{legacy: legacy, cfg: cfg}, nil
 }
 
 func newSyncCommand(deps Deps) *cobra.Command {
@@ -33,20 +46,44 @@ func newSyncCommand(deps Deps) *cobra.Command {
 			if len(folders) == 0 {
 				folders = mailsync.DefaultFolders
 			}
-			a, err := deps.Auth()
+			ctx := cmd.Context()
+			g, err := lazyProvider(ctx, deps)()
 			if err != nil {
 				return err
 			}
-			s, err := openStore(cmd, deps)
+			source, ok := g.(syncProvider)
+			if !ok || g.Account().ProviderID != "graph" {
+				return &mailbox.UnsupportedError{Operation: "Graph synchronization"}
+			}
+			cfg, err := routing()
 			if err != nil {
 				return err
 			}
-			defer s.Close()
-			g := deps.Graph(a)
+			if cfg.AccountID != "" && cfg.AccountID != string(g.Account().ID) {
+				return &mailbox.AccountMismatchError{Operation: "sync", Expected: mailbox.AccountID(cfg.AccountID), Actual: g.Account().ID}
+			}
+			bound, err := openBound(ctx, deps, dbPath(cmd), g.Account())
+			if err != nil {
+				return agentio.NewStaleError(err.Error(), "mailpipe account bind")
+			}
+			defer bound.Close()
+			cfg.AccountID = string(g.Account().ID)
+			if cfg.Collections == nil {
+				cfg.Collections = map[string]string{}
+			}
 			var results []mailsync.Result
 			var mismatch []string
 			for _, f := range folders {
-				r, err := mailsync.SyncFolder(cmd.Context(), s, g, f, full)
+				collection, err := source.Resolve(ctx, f)
+				if err != nil {
+					return err
+				}
+				collection.Name = f
+				cfg.Collections[f] = string(collection.Ref.CollectionID)
+				if err := config.Save(config.DefaultPath(), cfg); err != nil {
+					return fmt.Errorf("database bound but routing save failed; retry account bind: %w", err)
+				}
+				r, err := mailsync.SyncCollection(ctx, bound, graphSyncSource{source}, collection, full)
 				if err != nil {
 					return err
 				}
@@ -142,17 +179,21 @@ func newShowCommand(deps Deps) *cobra.Command {
 				return agentio.NewError(fmt.Sprintf("no message %d", n), "mailpipe ls")
 			}
 			if headers, _ := cmd.Flags().GetBool("headers"); headers {
-				g, err := lazyGraph(deps)()
+				g, err := lazyProvider(cmd.Context(), deps)()
 				if err != nil {
 					return err
 				}
-				raw, err := g.Raw(cmd.Context(), "/me/messages/"+url.PathEscape(m.GraphID)+"/$value")
+				ref, err := s.remoteRef(cmd.Context(), m.N)
+				if err != nil {
+					return err
+				}
+				raw, err := document.ReadSource(cmd.Context(), g, ref)
 				if err != nil {
 					return err
 				}
 				return agent.Text(headerBlock(raw), agent.Limit())
 			}
-			body, err := messageBody(cmd.Context(), s, m, lazyGraph(deps))
+			body, err := messageBody(cmd.Context(), s, m, lazyProvider(cmd.Context(), deps))
 			if err != nil {
 				return err
 			}
@@ -212,45 +253,25 @@ func headerBlock(raw []byte) string {
 	return h
 }
 
-// lazyGraph signs in and builds the Graph client on first use only, so
-// commands that may not need Graph (cached bodies, local stages) never prompt.
-func lazyGraph(deps Deps) func() (Graph, error) {
-	var once sync.Once
-	var g Graph
-	var gErr error
-	return func() (Graph, error) {
-		once.Do(func() {
-			a, err := deps.Auth()
-			if err != nil {
-				gErr = err
-				return
-			}
-			g = deps.Graph(a)
-		})
-		return g, gErr
-	}
-}
-
-// messageBody returns m's text body, from the store's cache or from Graph
-// (caching it). It is safe for concurrent use.
-func messageBody(ctx context.Context, s *store.Store, m store.Message, graphFn func() (Graph, error)) (string, error) {
+// messageBody preserves lazy cached reads and caches only complete text.
+func messageBody(ctx context.Context, s *commandStore, m store.Message, provider func() (mailbox.Provider, error)) (string, error) {
 	if m.Body != nil {
 		return *m.Body, nil
 	}
-	g, err := graphFn()
+	ref, err := s.remoteRef(ctx, m.N)
 	if err != nil {
 		return "", err
 	}
-	var resp struct {
-		Body struct {
-			Content string `json:"content"`
-		} `json:"body"`
-	}
-	if err := g.Get(ctx, "/me/messages/"+url.PathEscape(m.GraphID), url.Values{"$select": {"body"}}, &resp); err != nil {
+	p, err := provider()
+	if err != nil {
 		return "", err
 	}
-	if err := s.SetBody(ctx, m.N, resp.Body.Content); err != nil {
+	body, err := p.Text(ctx, ref)
+	if err != nil {
 		return "", err
 	}
-	return resp.Body.Content, nil
+	if err = s.SetBody(ctx, m.N, body); err != nil {
+		return "", err
+	}
+	return body, nil
 }

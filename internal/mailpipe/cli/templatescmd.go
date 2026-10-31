@@ -15,6 +15,7 @@ import (
 
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/store"
 	"github.com/mrothroc/mailpipe/pkg/template"
 )
@@ -131,7 +132,7 @@ func newTemplatesCheckCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			graphFn := lazyGraph(deps)
+			graphFn := lazyProvider(ctx, deps)
 			var rows []checkRow
 			matched, same, differ := 0, 0, 0
 			for _, m := range msgs {
@@ -226,7 +227,7 @@ func newTemplatesAnchorsCommand(deps Deps) *cobra.Command {
 				return err
 			}
 			defer s.Close()
-			texts, err := exampleBodies(ctx, s, lazyGraph(deps), store.Filter{Folder: folder, SenderLike: from}, from, subject)
+			texts, err := exampleBodies(ctx, s, lazyProvider(ctx, deps), store.Filter{Folder: folder, SenderLike: from}, from, subject)
 			if err != nil {
 				return err
 			}
@@ -250,7 +251,7 @@ func newTemplatesAnchorsCommand(deps Deps) *cobra.Command {
 
 // exampleBodies returns the bodies of the stored emails exactly from sender
 // whose subjects match.
-func exampleBodies(ctx context.Context, s *store.Store, graphFn func() (Graph, error), f store.Filter, sender string, subject *regexp.Regexp) ([]string, error) {
+func exampleBodies(ctx context.Context, s *commandStore, graphFn func() (mailbox.Provider, error), f store.Filter, sender string, subject *regexp.Regexp) ([]string, error) {
 	msgs, err := s.Messages(ctx, f)
 	if err != nil {
 		return nil, err

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/pkg/apply"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/stage"
 	"github.com/mrothroc/mailpipe/pkg/store"
 )
@@ -49,7 +51,7 @@ func newApplyCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return agentio.NewError(err.Error(), "mailpipe plan list")
 			}
-			g, err := lazyGraph(deps)()
+			g, err := lazyProvider(cmd.Context(), deps)()
 			if err != nil {
 				return err
 			}
@@ -74,7 +76,12 @@ func newApplyCommand(deps Deps) *cobra.Command {
 			}
 
 			var rows []apply.Outcome
-			sum, runErr := apply.Run(ctx, s, apply.NewGraphMailbox(g), id, items, opts, func(o apply.Outcome) error {
+			sum, runErr := apply.RunBound(ctx, s.bound, g, id, opts, func(o apply.Outcome) error {
+				o.Item.Folder = s.alias(o.Item.Folder)
+				o.Item.PlannedFolder = s.alias(o.Item.PlannedFolder)
+				if o.Detail == "collection memberships changed" {
+					o.Detail = "no longer in " + o.Item.PlannedFolder
+				}
 				rows = append(rows, o)
 				return nil
 			})
@@ -137,10 +144,20 @@ func newApplyCommand(deps Deps) *cobra.Command {
 	return cmd
 }
 
-func totals(cmd *cobra.Command, g Graph, folders []string) (map[string]int, error) {
+func totals(cmd *cobra.Command, g mailbox.Provider, folders []string) (map[string]int, error) {
 	out := make(map[string]int, len(folders))
 	for _, f := range folders {
-		n, err := g.FolderTotal(cmd.Context(), f)
+		collection, err := resolveCollection(cmd.Context(), g, f)
+		if err != nil {
+			return nil, err
+		}
+		counter, ok := g.(interface {
+			Total(context.Context, mailbox.CollectionRef) (int, error)
+		})
+		if !ok {
+			return nil, &mailbox.UnsupportedError{Operation: "remote counts"}
+		}
+		n, err := counter.Total(cmd.Context(), collection.Ref)
 		if err != nil {
 			return nil, err
 		}

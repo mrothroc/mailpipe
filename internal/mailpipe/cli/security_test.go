@@ -14,7 +14,7 @@ import (
 func TestMailControlsAreInertInTerminalAndRoundTripInJSON(t *testing.T) {
 	e := newEnv(t)
 	const hostile = "Receipt\x1b]52;c;Zml4dHVyZQ==\a\x1b]8;;https://example.net\x1b\\link\x1b]8;;\x1b\\\u009b31m\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\rhidden"
-	s, err := store.Open(e.db)
+	s, err := e.boundStore()
 	if err != nil {
 		t.Fatal(err)
 	}

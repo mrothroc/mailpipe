@@ -18,9 +18,6 @@ var ErrStalePlan = errors.New("plan does not record the folder each message was 
 // WouldMove is the outcome of an item that passed every check in check mode.
 const WouldMove = "would_move"
 
-// batchSize matches Graph's $batch limit.
-const batchSize = 20
-
 // Remote is a message as the server reports it now.
 type Remote struct {
 	InternetMessageID string
@@ -86,6 +83,7 @@ func (s *Summary) add(status string) {
 	}
 }
 
+// Run is the legacy-unbound compatibility API; bound CLI consumers use RunBound.
 // Run carries out the plan's items for opts.Action, calling emit for each
 // item it examines. With Execute it logs every attempt; a failed or skipped
 // item stays pending for the next run. A lookup that fails as a whole stops
@@ -122,8 +120,15 @@ func Run(ctx context.Context, log Log, box Mailbox, planID int64, items []store.
 			}
 		}
 	}
-	for start := 0; start < len(todo); start += batchSize {
-		chunk := todo[start:min(start+batchSize, len(todo))]
+	size := len(todo)
+	if adapter, ok := box.(interface{ ChunkSize() int }); ok {
+		size = adapter.ChunkSize()
+	}
+	if len(todo) > 0 && size <= 0 {
+		return sum, errors.New("apply: adapter supplied invalid chunk size")
+	}
+	for start := 0; start < len(todo); start += size {
+		chunk := todo[start:min(start+size, len(todo))]
 		outcomes, runErr := applyChunk(ctx, box, chunk, folders, opts)
 		if opts.Execute && len(outcomes) > 0 {
 			rows := make([]store.Action, len(outcomes))

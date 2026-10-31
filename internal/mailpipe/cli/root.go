@@ -41,6 +41,6 @@ func NewRootCommand(deps Deps) *cobra.Command {
 		code := agentio.Fail(c.CommandPath(), c.ErrOrStderr(), agentio.NewUsageError(err.Error(), c.CommandPath()+" --help"))
 		return newExitErr(code, agentio.NewReported(code))
 	})
-	root.AddCommand(newConfigCommand(), newAuthCommand(deps), newSyncCommand(deps), newLsCommand(deps), newShowCommand(deps), newStagesCommand(), newRunCommand(deps), newVerdictsCommand(deps), newImportCommand(deps), newPlanCommand(deps), newApplyCommand(deps), newActionsCommand(deps), newRulesCommand(deps), newDigestCommand(deps), newSaveCommand(deps), newTemplatesCommand(deps), newFileCommand(deps))
+	root.AddCommand(newAccountCommand(deps), newConfigCommand(), newAuthCommand(deps), newSyncCommand(deps), newLsCommand(deps), newShowCommand(deps), newStagesCommand(), newRunCommand(deps), newVerdictsCommand(deps), newImportCommand(deps), newPlanCommand(deps), newApplyCommand(deps), newActionsCommand(deps), newRulesCommand(deps), newDigestCommand(deps), newSaveCommand(deps), newTemplatesCommand(deps), newFileCommand(deps))
 	return root
 }

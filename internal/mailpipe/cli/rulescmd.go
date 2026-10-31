@@ -11,6 +11,7 @@ import (
 
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/rules"
 	"github.com/mrothroc/mailpipe/pkg/stage"
 	"github.com/mrothroc/mailpipe/pkg/store"
@@ -20,7 +21,7 @@ import (
 // plan moved mail from, with none of their mail kept anywhere in the mailbox,
 // and the policy's block senders whatever is kept; never the owner, a
 // contact, a keep, never_block or junk sender. No candidates is no error.
-func assessSenders(ctx context.Context, s *store.Store, g Graph, c config.Stages) ([]rules.Candidate, error) {
+func assessSenders(ctx context.Context, s *commandStore, srv rules.ManagedService, c config.Stages) ([]rules.Candidate, error) {
 	moved, err := s.MovedSenders(ctx)
 	if err != nil {
 		return nil, err
@@ -71,7 +72,7 @@ func assessSenders(ctx context.Context, s *store.Store, g Graph, c config.Stages
 			search = append(search, m.Sender)
 		}
 	}
-	kept, err := rules.NewGraphRules(g).Kept(ctx, search)
+	kept, err := srv.Kept(ctx, search)
 	if err != nil {
 		return nil, agentio.NewError(fmt.Sprintf("check where each sender's mail is: %v; nothing was written", err),
 			"mailpipe rules senders")
@@ -84,8 +85,8 @@ func assessSenders(ctx context.Context, s *store.Store, g Graph, c config.Stages
 }
 
 // openRules opens the store and Graph; the caller closes the store.
-func openRules(cmd *cobra.Command, deps Deps) (*store.Store, Graph, error) {
-	g, err := lazyGraph(deps)()
+func openRules(cmd *cobra.Command, deps Deps) (*commandStore, mailbox.Provider, error) {
+	g, err := lazyProvider(cmd.Context(), deps)()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -98,16 +99,16 @@ func openRules(cmd *cobra.Command, deps Deps) (*store.Store, Graph, error) {
 
 // blocklistDiff assesses the senders and diffs the managed rules (the
 // blocklist, then the junk rules) against the server's.
-func blocklistDiff(ctx context.Context, s *store.Store, g Graph) ([]rules.Change, error) {
+func blocklistDiff(ctx context.Context, s *commandStore, g mailbox.Provider, srv rules.ManagedService) ([]rules.Change, error) {
 	c, err := loadStages()
 	if err != nil {
 		return nil, err
 	}
-	cs, err := assessSenders(ctx, s, g, c)
+	cs, err := assessSenders(ctx, s, srv, c)
 	if err != nil {
 		return nil, err
 	}
-	server, err := rules.NewGraphRules(g).List(ctx)
+	server, err := srv.List(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +153,11 @@ func newRulesCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cs, err := assessSenders(cmd.Context(), s, g, c)
+			srv, err := rules.ManagedFor(g)
+			if err != nil {
+				return err
+			}
+			cs, err := assessSenders(cmd.Context(), s, srv, c)
 			if err != nil {
 				return err
 			}
@@ -180,7 +185,11 @@ func newRulesCommand(deps Deps) *cobra.Command {
 				return err
 			}
 			defer s.Close()
-			changes, err := blocklistDiff(cmd.Context(), s, g)
+			srv, err := rules.ManagedFor(g)
+			if err != nil {
+				return err
+			}
+			changes, err := blocklistDiff(cmd.Context(), s, g, srv)
 			if err != nil {
 				return err
 			}
@@ -205,7 +214,11 @@ func newRulesCommand(deps Deps) *cobra.Command {
 			}
 			defer s.Close()
 			ctx := cmd.Context()
-			changes, err := blocklistDiff(ctx, s, g)
+			srv, err := rules.ManagedFor(g)
+			if err != nil {
+				return err
+			}
+			changes, err := blocklistDiff(ctx, s, g, srv)
 			if err != nil {
 				return err
 			}
@@ -222,8 +235,7 @@ func newRulesCommand(deps Deps) *cobra.Command {
 				return nil
 			}
 			const retry = "mailpipe rules apply --execute"
-			srv := rules.NewGraphRules(g)
-			done, runErr := rules.Execute(ctx, srv, changes)
+			done, runErr := srv.ExecuteReviewed(ctx, changes)
 			tableErr := changesTable(agent, changes)
 			if runErr != nil { // the failed write matters more than the table
 				what := fmt.Sprintf("made %d of %d changes, then %v", done, n, runErr)
@@ -250,11 +262,15 @@ func newRulesCommand(deps Deps) *cobra.Command {
 
 	list := newAgentCommand("list", "List every Inbox rule on the server; kind is managed (the blocklist), retired (an old per-plan rule) or blank (yours)", cobra.NoArgs,
 		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
-			g, err := lazyGraph(deps)()
+			g, err := lazyProvider(cmd.Context(), deps)()
 			if err != nil {
 				return err
 			}
-			server, err := rules.NewGraphRules(g).List(cmd.Context())
+			srv, err := rules.ManagedFor(g)
+			if err != nil {
+				return err
+			}
+			server, err := srv.List(cmd.Context())
 			if err != nil {
 				return err
 			}

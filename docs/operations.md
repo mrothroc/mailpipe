@@ -37,3 +37,38 @@ Costs depend on the configured stages, models and message volume. Set explicit c
 - **Signed out:** `mailpipe auth login` (a device code to enter in a browser). A command that needs sign-in says so, with exit code 3.
 - **A wrong deletion:** the mail is in Deleted Items. `actions <plan>` lists what moved. Deleted Items is purged from time to time, so act soon, and save anything worth keeping before it goes.
 - **Blank metadata after a sync:** fixed in the sync. A full pass (`sync --folder inbox --full`) repairs any older blank rows.
+
+## Attributing an existing Graph mirror
+
+Existing configuration without a provider still uses Microsoft 365. A new empty
+mirror binds to the authenticated immutable mailbox subject on its first sync.
+An existing historical mirror requires an explicit attribution step:
+
+1. Stop older nonparticipating programs and close other database sessions.
+2. Run `mailpipe account bind` with the intended private configuration and database.
+   This performs the existing backed-up schema opening, then verifies every live
+   message against the authenticated account. It reports an inventory digest;
+   it does not bind the history or write account routing.
+3. Review the account and confirm that **all** removed messages and historical
+   verdicts, plans and actions belong to it, even if there are no live messages.
+4. With that approval, run `mailpipe account bind --execute --confirm-history <digest>`.
+   Changed inventories or missing/mismatching live evidence require reconciliation.
+5. Create and review fresh numbered plans. Historical pending plans lack bound
+   execution evidence and cannot be applied. Run a fresh sync; old delta links
+   are not adopted.
+
+This changes local attribution/configuration, not server mail. Approval for
+`apply`, `rules apply` and `save` execution remains separate. Binding cannot switch
+an existing database to another account/provider. Other accounts require separate
+configuration and database files.
+
+If binding succeeds but saving routing fails, retain the database and its backup.
+Restore a valid private configuration for the same authenticated account and rerun
+`mailpipe account bind --execute` to verify the existing binding and repair routing.
+Do not replace or reassign the database. Local commands remain offline once routing
+is available; cached empty bodies also need no sign-in.
+
+An uncertain move or failed action audit requires reconciliation before another
+execute attempt. Failed sync cleanup is reported separately; close sessions before
+exclusive abandoned-staging maintenance. No command automatically discards another
+session's staging or weakens lifecycle locks.

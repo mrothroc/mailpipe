@@ -38,10 +38,11 @@ type wireRequest struct {
 }
 
 // Batch sends reqs as one $batch request and returns their responses in the
-// order of reqs. Sub-requests that were throttled or hit a server error are
+// order of reqs. In read-only batches, throttled/server-error sub-requests are
 // re-sent on their own, after the longest Retry-After any of them asked for,
 // up to MaxTries rounds; a sub-request still failing then is returned with its
-// last status, for the caller to treat as failed.
+// last status, for the caller to treat as failed. Mutation batches are not
+// replayed here: their adapter must recheck explicit rejections before retry.
 func (c *Client) Batch(ctx context.Context, reqs []BatchRequest) ([]BatchResponse, error) {
 	if len(reqs) > MaxBatch {
 		return nil, fmt.Errorf("batch of %d requests; Graph accepts at most %d", len(reqs), MaxBatch)
@@ -52,6 +53,12 @@ func (c *Client) Batch(ctx context.Context, reqs []BatchRequest) ([]BatchRespons
 			return nil, fmt.Errorf("batch request id %q is used twice", r.ID)
 		}
 		seen[r.ID] = true
+	}
+	readOnly := true
+	for _, r := range reqs {
+		if r.Method != http.MethodGet {
+			readOnly = false
+		}
 	}
 	done := map[string]BatchResponse{}
 	pending := reqs
@@ -70,11 +77,14 @@ func (c *Client) Batch(ctx context.Context, reqs []BatchRequest) ([]BatchRespons
 		var out struct {
 			Responses []BatchResponse `json:"responses"`
 		}
-		if err := c.Do(ctx, http.MethodPost, "/$batch", nil, "", map[string]any{"requests": wire}, &out); err != nil {
+		if err := c.do(ctx, http.MethodPost, "/$batch", nil, "", map[string]any{"requests": wire}, &out, readOnly); err != nil {
 			return nil, err
 		}
 		byID := make(map[string]BatchResponse, len(out.Responses))
 		for _, r := range out.Responses {
+			if _, duplicate := byID[r.ID]; duplicate {
+				return nil, fmt.Errorf("batch response repeats request %q", r.ID)
+			}
 			byID[r.ID] = r
 		}
 		var retry []BatchRequest
@@ -85,7 +95,7 @@ func (c *Client) Batch(ctx context.Context, reqs []BatchRequest) ([]BatchRespons
 				return nil, fmt.Errorf("batch response has no answer for request %q", r.ID)
 			}
 			done[r.ID] = resp
-			if retryable(resp.Status) && attempt < MaxTries-1 {
+			if readOnly && retryable(resp.Status) && attempt < MaxTries-1 {
 				retry = append(retry, r)
 				wait = max(wait, backoff(attempt, resp.header("Retry-After")))
 			}
@@ -94,7 +104,9 @@ func (c *Client) Batch(ctx context.Context, reqs []BatchRequest) ([]BatchRespons
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			c.Sleep(wait)
+			if err := c.wait(ctx, wait); err != nil {
+				return nil, err
+			}
 		}
 		pending = retry
 	}

@@ -23,6 +23,8 @@ type fakeMailbox struct {
 	batchErr  error            // a whole Move call fails
 }
 
+func (m *fakeMailbox) ChunkSize() int { return 20 }
+
 func (f *fakeMailbox) FolderID(_ context.Context, name string) (string, error) {
 	if id, ok := f.folders[name]; ok {
 		return id, nil

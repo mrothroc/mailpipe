@@ -29,6 +29,13 @@ const (
 	timeout = 60 * time.Second
 )
 
+// ResponseLimitError means a response was discarded after exceeding its bound.
+type ResponseLimitError struct{ Limit int64 }
+
+func (e *ResponseLimitError) Error() string {
+	return fmt.Sprintf("graph: response exceeds %d-byte limit", e.Limit)
+}
+
 // APIError is a Graph error response.
 type APIError struct {
 	Status  int
@@ -58,20 +65,32 @@ type Client struct {
 
 // New returns a Client that gets access tokens from token.
 func New(token func(ctx context.Context) (string, error)) *Client {
-	return &Client{Token: token, HTTP: &http.Client{Timeout: timeout}, Base: DefaultBase, Sleep: time.Sleep}
+	return &Client{Token: token, HTTP: &http.Client{Timeout: timeout}, Base: DefaultBase}
 }
 
 func retryable(status int) bool {
 	return status == http.StatusTooManyRequests || status >= 500
 }
 
-// Do sends one request, retrying throttling and server errors, and decodes the
+// Do sends one request and decodes the response. GET requests retry throttling
+// and server errors; mutating requests are never blindly replayed. It decodes the
 // JSON response into out (when out is non-nil). path is either relative to
 // Base ("/me/...") or an absolute link returned by Graph.
 func (c *Client) Do(ctx context.Context, method, path string, query url.Values, extraPrefer string, body, out any) error {
-	data, err := c.send(ctx, method, path, query, extraPrefer, body)
-	if err != nil || out == nil || len(data) == 0 {
+	return c.do(ctx, method, path, query, extraPrefer, body, out, method == http.MethodGet)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, extraPrefer string, body, out any, readOnly bool) error {
+	limit := int64(16 << 20)
+	if query.Get("$select") == "body" {
+		limit = 64 << 20
+	}
+	data, err := c.sendTo(ctx, method, path, query, extraPrefer, body, nil, limit, readOnly)
+	if err != nil || out == nil {
 		return err
+	}
+	if len(data) == 0 {
+		return errors.New("graph: empty JSON response")
 	}
 	return json.Unmarshal(data, out)
 }
@@ -85,6 +104,20 @@ func (c *Client) Raw(ctx context.Context, path string) ([]byte, error) {
 // send makes the request, retrying throttling and transient failures, and
 // returns the successful response's body.
 func (c *Client) send(ctx context.Context, method, path string, query url.Values, extraPrefer string, body any) ([]byte, error) {
+	return c.sendTo(ctx, method, path, query, extraPrefer, body, nil, 64<<20, method == http.MethodGet)
+}
+
+// WriteRaw streams a complete bounded GET. After output begins any failure is
+// returned; the caller discards partial output rather than receiving a replay.
+func (c *Client) WriteRaw(ctx context.Context, path string, w io.Writer, limit int64) error {
+	if w == nil || limit <= 0 {
+		return errors.New("graph: writer and finite source limit required")
+	}
+	_, err := c.sendTo(ctx, http.MethodGet, path, nil, "", nil, w, limit, true)
+	return err
+}
+
+func (c *Client) sendTo(ctx context.Context, method, path string, query url.Values, extraPrefer string, body any, sink io.Writer, limit int64, readOnly bool) ([]byte, error) {
 	base, err := url.Parse(c.Base)
 	if err != nil || !validAPIURL(base) {
 		return nil, errors.New("graph: invalid API base URL")
@@ -137,7 +170,11 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 		pref += ", " + extraPrefer
 	}
 	var last error
-	for attempt := 0; attempt < MaxTries; attempt++ {
+	tries := 1
+	if readOnly {
+		tries = MaxTries
+	}
+	for attempt := 0; attempt < tries; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err // cancelled: stop rather than sleep through the backoffs
 		}
@@ -160,8 +197,8 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if attempt < MaxTries-1 {
-				c.Sleep(backoff(attempt, retryAfter))
+			if attempt < tries-1 {
+				return c.wait(ctx, backoff(attempt, retryAfter))
 			}
 			return nil
 		}
@@ -176,7 +213,17 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 			}
 			continue
 		}
-		data, readErr := io.ReadAll(resp.Body)
+		if sink != nil && resp.StatusCode < 400 {
+			err := copyBounded(ctx, sink, resp.Body, limit)
+			resp.Body.Close()
+			return nil, err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+		if readErr == nil && int64(len(data)) > limit {
+			readErr = &ResponseLimitError{Limit: limit}
+			resp.Body.Close()
+			return nil, readErr
+		}
 		resp.Body.Close()
 		if readErr != nil {
 			last = readErr
@@ -267,4 +314,62 @@ func (c *Client) FolderTotal(ctx context.Context, folder string) (int, error) {
 	}
 	err := c.Get(ctx, "/me/mailFolders/"+url.PathEscape(folder), url.Values{"$select": {"totalItemCount"}}, &f)
 	return f.TotalItemCount, err
+}
+
+// copyBounded limits total input independently from its 32 KiB scratch buffer.
+func copyBounded(ctx context.Context, w io.Writer, r io.Reader, limit int64) error {
+	buf := make([]byte, 32<<10)
+	var total int64
+	empty := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := r.Read(buf)
+		if n > 0 {
+			empty = 0
+			if int64(n) > limit-total {
+				return fmt.Errorf("read MIME: message exceeds %d-byte content limit; incomplete content was discarded", limit)
+			}
+			written, e := w.Write(buf[:n])
+			if e != nil {
+				return e
+			}
+			if written != n {
+				return io.ErrShortWrite
+			}
+			total += int64(n)
+		} else {
+			empty++
+			if empty > 100 {
+				return io.ErrNoProgress
+			}
+		}
+		if err == io.EOF {
+			return ctx.Err()
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// wait uses the operation context for production backoff. Sleep is an optional
+// deterministic collaborator; implementations must return promptly on cancel.
+func (c *Client) wait(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.Sleep != nil {
+		c.Sleep(d)
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
