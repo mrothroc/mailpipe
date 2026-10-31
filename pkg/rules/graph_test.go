@@ -197,7 +197,7 @@ func TestJunkRulesMatchSendersAndMoveToJunk(t *testing.T) {
 			{"id":"J1","displayName":"mailpipe junk #1","sequence":2,"isEnabled":true,
 			 "conditions":{"senderContains":["@publisher.example.org","@Charity.example.net"]},"actions":{"moveToFolder":"F-JUNK","stopProcessingRules":true}},
 			{"id":"J2","displayName":"mailpipe junk #2","sequence":3,"isEnabled":true,
-			 "conditions":{"senderContains":["@x.org"]},"actions":{"moveToFolder":"F-OTHER","stopProcessingRules":true}}]}`,
+			 "conditions":{"senderContains":["@sample.example.org"]},"actions":{"moveToFolder":"F-OTHER","stopProcessingRules":true}}]}`,
 	}}
 	r := rules.NewGraphRules(g)
 	ctx := context.Background()
@@ -207,7 +207,7 @@ func TestJunkRulesMatchSendersAndMoveToJunk(t *testing.T) {
 	}
 	want := []rules.Rule{
 		{ID: "J1", Name: "mailpipe junk #1", Sequence: 2, Enabled: true, Senders: []string{"@charity.example.net", "@publisher.example.org"}, Junk: true, Exact: true},
-		{ID: "J2", Name: "mailpipe junk #2", Sequence: 3, Enabled: true, Senders: []string{"@x.org"}, Junk: true},
+		{ID: "J2", Name: "mailpipe junk #2", Sequence: 3, Enabled: true, Senders: []string{"@sample.example.org"}, Junk: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
