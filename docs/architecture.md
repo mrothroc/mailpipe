@@ -29,6 +29,7 @@ The table is generated from each package's doc comment (`tools/docgen`). Keep th
 | `pkg/document` | Package document reads an email's MIME source into the parts a filing step needs: its headers, text and HTML bodies, inline images and attachments, and an offline HTML page for rendering it (inline images embedded, remote resources removed, so rendering never fetches anything). |
 | `pkg/graph` | Package graph is a thin Microsoft Graph client: bearer auth, immutable message ids (stable across folder moves), text bodies, throttling retries and paging. |
 | `pkg/graphmail` | Package graphmail adapts Microsoft Graph mailbox data and reviewed operations to the provider-neutral mailbox contract. |
+| `pkg/imapmail` | Package imapmail provides verified TLS, read-only IMAP discovery and bounded occurrence synchronization, using a required scoped metadata collaborator. |
 | `pkg/keychain` | Package keychain stores secrets in the macOS login Keychain through the security tool. |
 | `pkg/mailbox` | Package mailbox defines provider-neutral accounts, message identities, collection memberships and optional reviewed capabilities. |
 | `pkg/mailsync` | Package mailsync coordinates account-bound sync passes. |
