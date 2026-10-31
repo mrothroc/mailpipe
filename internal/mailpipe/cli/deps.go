@@ -12,13 +12,12 @@ import (
 
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
-	"github.com/mrothroc/mailpipe/pkg/apply"
 	"github.com/mrothroc/mailpipe/pkg/graph"
+	"github.com/mrothroc/mailpipe/pkg/graphmail"
 	"github.com/mrothroc/mailpipe/pkg/keychain"
-	"github.com/mrothroc/mailpipe/pkg/mailsync"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/msauth"
 	"github.com/mrothroc/mailpipe/pkg/render"
-	"github.com/mrothroc/mailpipe/pkg/rules"
 	"github.com/mrothroc/mailpipe/pkg/store"
 )
 
@@ -45,11 +44,10 @@ type Authenticator interface {
 	Logout(ctx context.Context) error
 }
 
-// Graph is the Graph surface the commands use.
+// Graph is the adapter transport supplied only at dependency wiring. Command
+// content and action consumers use mailbox.Provider.
 type Graph interface {
-	mailsync.Source
-	apply.Graph
-	rules.Graph
+	graphmail.Transport
 	// Raw returns a response body as is, such as a message's MIME source.
 	Raw(ctx context.Context, path string) ([]byte, error)
 }
@@ -57,9 +55,11 @@ type Graph interface {
 // Deps builds the collaborators lazily, so `mailpipe --help` needs no
 // Keychain, network or database. Tests replace every field.
 type Deps struct {
-	Auth  func() (Authenticator, error)
-	Store func(path string) (*store.Store, error)
-	Graph func(auth Authenticator) Graph
+	Auth         func() (Authenticator, error)
+	Store        func(path string) (*store.Store, error)
+	AccountStore func(context.Context, string, mailbox.Account) (*store.AccountStore, error)
+	Provider     func(context.Context) (mailbox.Provider, error)
+	Graph        func(auth Authenticator) Graph
 	// Secret reads a Keychain item (keychain.ErrNotFound when absent).
 	Secret func(ctx context.Context, service, account string) (string, error)
 	// Render turns an offline HTML page into a PDF.
@@ -79,8 +79,9 @@ func DefaultDeps() Deps {
 			kc := keychain.New(keychainService, nil).WithLock(filepath.Join(filepath.Dir(config.DefaultPath()), "keychain.lock"))
 			return msauth.New(msauth.Config{ClientID: cfg.ClientID, TenantID: cfg.TenantID, Scopes: scopes}, kc)
 		},
-		Store: store.Open,
-		Graph: func(a Authenticator) Graph { return graph.New(a.Token) },
+		Store:        store.Open,
+		AccountStore: store.OpenAccount,
+		Graph:        func(a Authenticator) Graph { return graph.New(a.Token) },
 		Secret: func(ctx context.Context, service, account string) (string, error) {
 			return keychain.New(service, nil).Get(ctx, account)
 		},
@@ -119,6 +120,12 @@ func classify(err error) error {
 	}
 	if interrupted(err) {
 		return agentio.NewError(err.Error(), rerunHint)
+	}
+	if errors.Is(err, mailbox.ErrAccountMismatch) {
+		return agentio.NewStaleError(err.Error(), "mailpipe account bind")
+	}
+	if errors.Is(err, mailbox.ErrStaleIdentity) {
+		return agentio.NewStaleError(err.Error(), "mailpipe sync --full")
 	}
 	if errors.Is(err, config.ErrNotConfigured) {
 		return agentio.NewStaleError(err.Error(), config.InitHint)

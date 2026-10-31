@@ -22,8 +22,9 @@ type Graph interface {
 
 // GraphRules reads and writes the signed-in user's Inbox rules.
 type GraphRules struct {
-	g      Graph
-	junkID string // the Junk folder's id, looked up once when needed
+	g        Graph
+	junkID   string            // the Junk folder's id, looked up once when needed
+	original map[string]string // complete adapter-owned original rule evidence
 }
 
 // junkFolder returns the Junk folder's id.
@@ -128,26 +129,48 @@ func (w wireRule) rule(junkID func() (string, error)) (Rule, error) {
 
 // List returns every Inbox rule, in the server's order.
 func (r *GraphRules) List(ctx context.Context) ([]Rule, error) {
+	out, evidence, err := r.readRules(ctx)
+	if err == nil {
+		r.original = evidence
+	}
+	return out, err
+}
+
+func (r *GraphRules) readRules(ctx context.Context) ([]Rule, map[string]string, error) {
+	evidence := map[string]string{}
 	var out []Rule
 	link := rulesPath
 	for link != "" {
 		var page struct {
-			Value    []wireRule `json:"value"`
-			NextLink string     `json:"@odata.nextLink"`
+			Value    []json.RawMessage `json:"value"`
+			NextLink string            `json:"@odata.nextLink"`
 		}
 		if err := r.g.Do(ctx, http.MethodGet, link, nil, "", nil, &page); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		for _, w := range page.Value {
+		for _, raw := range page.Value {
+			var w wireRule
+			if err := json.Unmarshal(raw, &w); err != nil {
+				return nil, nil, err
+			}
 			rule, err := w.rule(func() (string, error) { return r.junkFolder(ctx) })
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
+			var complete any
+			if err := json.Unmarshal(raw, &complete); err != nil {
+				return nil, nil, err
+			}
+			canonical, err := json.Marshal(complete)
+			if err != nil {
+				return nil, nil, err
+			}
+			evidence[rule.ID] = string(canonical)
 			out = append(out, rule)
 		}
 		link = page.NextLink
 	}
-	return out, nil
+	return out, evidence, nil
 }
 
 func fromAddresses(senders []string) []recipient {

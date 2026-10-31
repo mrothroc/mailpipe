@@ -28,6 +28,26 @@ type fakeGraph struct {
 	doErr   map[string]error
 }
 
+func TestReviewedManagedRuleRefusesConcurrentEdit(t *testing.T) {
+	const path = "GET /me/mailFolders/inbox/messageRules"
+	g := &fakeGraph{answers: map[string]string{path: `{"value":[{"id":"R1","displayName":"mailpipe blocked #1","sequence":1,"isEnabled":true,"conditions":{"fromAddresses":[{"emailAddress":{"address":"a@example.org"}}]},"actions":{"delete":true,"stopProcessingRules":true}}]}`}}
+	srv := rules.NewGraphRules(g)
+	listed, err := srv.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes := rules.Diff(rules.Desired([]string{"b@example.org"}), listed)
+	g.answers[path] = strings.Replace(g.answers[path], `"sequence":1`, `"sequence":2`, 1)
+	if _, err = srv.ExecuteReviewed(context.Background(), changes); err == nil {
+		t.Fatal("concurrently reordered rule overwritten")
+	}
+	for _, call := range g.calls {
+		if call.method != "GET" {
+			t.Fatalf("mutation after stale rule: %+v", call)
+		}
+	}
+}
+
 func (g *fakeGraph) Do(_ context.Context, method, path string, q url.Values, _ string, body, out any) error {
 	b, _ := json.Marshal(body)
 	if body == nil {

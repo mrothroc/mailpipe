@@ -6,12 +6,12 @@ mailpipe is one Go module organised into `cmd/`, `internal/` and `pkg/`, so the 
 
 Each layer only hands data to the next, so a new source, stage or action plugs in without touching the others.
 
-1. **Source.** Microsoft Graph, through delegated device-code sign-in (a public client, no secret). Delta queries do the first full pass and every later incremental one. Bulk changes go through Graph with explicit identity checks.
-2. **Store.** A local SQLite mirror of message metadata, with bodies cached on demand, every verdict with its provenance, plans, and an action log. Messages have stable local numbers (`n`), which every command takes.
+1. **Source.** Microsoft Graph, through delegated device-code sign-in (a public client, no secret). A Graph mailbox adapter converts wire data into account-bound domain references. Protocol scanners supply complete pages; the shared sync lifecycle and account store publish them atomically. Bulk changes use reviewed identity checks.
+2. **Store.** A permanently account/provider-bound SQLite mirror of metadata and memberships, with bodies cached on demand, verdict provenance, plans and an action log. Stable local numbers (`n`) survive ordinary moves. Historical attribution is explicit; unbound and account-aware APIs remain separate.
 3. **Stages.** Stages judge messages and return verdicts. They never act on mail. See [stages.md](stages.md).
 4. **Policy.** It turns the latest verdict of each stage into an action: keep, quarantine, delete or digest. It lives in private configuration, apart from the stages. See [policy.md](policy.md).
 5. **Actions.**
-   - **Plans:** an action happens only through a stored, numbered plan. `apply` moves its messages with Graph JSON batching, re-checking each message's Message-ID and sender first, and logs every attempt.
+   - **Plans:** an action happens only through a stored, numbered plan. `apply` moves its messages with Graph JSON batching, re-checking account, immutable identity/locator, Message-ID, sender, membership and any revision immediately before execution, and logs attempts with returned state.
    - **Blocklist:** server-side Inbox rules stop new mail from blocked senders.
    - **Filing:** records are saved as PDFs. See [filing.md](filing.md).
 
@@ -24,13 +24,14 @@ The table is generated from each package's doc comment (`tools/docgen`). Keep th
 |---|---|
 | `cmd/mailpipe` | Command mailpipe is the mailpipe CLI entry point. |
 | `internal/mailpipe/cli` | Package cli implements the mailpipe command line. |
-| `internal/mailpipe/config` | Package config reads mailpipe's private per-user configuration: the Entra app registration it signs in through (~/mail/config.json) and the stages, policy and owner's addresses (~/mail/stages.json). |
+| `internal/mailpipe/config` | Package config reads mailpipe's private per-user configuration: the Entra app registration it signs in through (~/mail/config.json) and the stages, policy and owner's addresses (~/mail/stages.json), plus verified account and collection routing. |
 | `pkg/apply` | Package apply carries out a stored plan against the mailbox. |
 | `pkg/document` | Package document reads an email's MIME source into the parts a filing step needs: its headers, text and HTML bodies, inline images and attachments, and an offline HTML page for rendering it (inline images embedded, remote resources removed, so rendering never fetches anything). |
 | `pkg/graph` | Package graph is a thin Microsoft Graph client: bearer auth, immutable message ids (stable across folder moves), text bodies, throttling retries and paging. |
+| `pkg/graphmail` | Package graphmail adapts Microsoft Graph mailbox data and reviewed operations to the provider-neutral mailbox contract. |
 | `pkg/keychain` | Package keychain stores secrets in the macOS login Keychain through the security tool. |
 | `pkg/mailbox` | Package mailbox defines provider-neutral accounts, message identities, collection memberships and optional reviewed capabilities. |
-| `pkg/mailsync` | Package mailsync mirrors mail folders into the store with Graph delta queries: a complete pass the first time, only changes after that. |
+| `pkg/mailsync` | Package mailsync coordinates account-bound sync passes. |
 | `pkg/msauth` | Package msauth signs in to Microsoft 365 with the device code flow (a public client, no secret) and keeps MSAL's token cache in the macOS Keychain. |
 | `pkg/policy` | Package policy turns stage verdicts into actions. |
 | `pkg/render` | Package render turns an HTML page into a PDF with headless Chrome. |

@@ -95,7 +95,7 @@ func newFileDraftCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			graphFn := lazyGraph(deps)
+			graphFn := lazyProvider(ctx, deps)
 			var rows []draftRow
 			seen := map[string]int64{}
 			saved, stale := 0, 0

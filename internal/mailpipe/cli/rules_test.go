@@ -150,7 +150,7 @@ func TestRulesNeverSearchForABlankSender(t *testing.T) {
 	e.stagesConfig("http://unused")
 	e.run("sync")
 	// Imports refuse blank senders, so the plan is written to the store directly.
-	s, err := store.Open(e.db)
+	s, err := e.boundStore()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"net/url"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -41,7 +41,7 @@ type saveRow struct {
 // readManifest reads and checks every row before anything is written: a
 // header "n<TAB>folder<TAB>name", then one row per message. Folders are
 // relative to the root and may not leave it; names are plain file names.
-func readManifest(ctx context.Context, s *store.Store, path string) ([]*saveRow, error) {
+func readManifest(ctx context.Context, s *commandStore, path string) ([]*saveRow, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, agentio.NewUsageError(err.Error(), "mailpipe save --help")
@@ -287,9 +287,9 @@ func newSaveCommand(deps Deps) *cobra.Command {
 			if err := s.AddVerdicts(ctx, pending); err != nil {
 				return err
 			}
-			var g Graph
+			var g mailbox.Provider
 			if len(todo) > 0 {
-				if g, err = lazyGraph(deps)(); err != nil {
+				if g, err = lazyProvider(ctx, deps)(); err != nil {
 					return err
 				}
 			}
@@ -343,7 +343,7 @@ func newSaveCommand(deps Deps) *cobra.Command {
 // alreadySaved reports, and marks on r, a row whose message's latest filing
 // verdict is "saved" to this row's target (its file, or its attachments
 // named after it), with every one of those files still there.
-func alreadySaved(ctx context.Context, s *store.Store, root *os.Root, r *saveRow) (bool, error) {
+func alreadySaved(ctx context.Context, s *commandStore, root *os.Root, r *saveRow) (bool, error) {
 	vs, err := s.Verdicts(ctx, r.msg.N)
 	if err != nil {
 		return false, err
@@ -374,9 +374,14 @@ func alreadySaved(ctx context.Context, s *store.Store, root *os.Root, r *saveRow
 
 // saveOne saves one row's files and records the outcome on the row and, once
 // saved, as a filing:saved verdict.
-func saveOne(ctx context.Context, s *store.Store, g Graph, renderFn func(context.Context, string) ([]byte, error), root *os.Root, r *saveRow) {
+func saveOne(ctx context.Context, s *commandStore, g mailbox.Provider, renderFn func(context.Context, string) ([]byte, error), root *os.Root, r *saveRow) {
 	fail := func(err error) { r.status, r.detail = "failed", err.Error() }
-	raw, err := g.Raw(ctx, "/me/messages/"+url.PathEscape(r.msg.GraphID)+"/$value")
+	ref, err := s.remoteRef(ctx, r.msg.N)
+	if err != nil {
+		r.status, r.detail = "failed", err.Error()
+		return
+	}
+	raw, err := document.ReadSource(ctx, g, ref)
 	if err != nil {
 		fail(fmt.Errorf("fetch: %w", err))
 		return
