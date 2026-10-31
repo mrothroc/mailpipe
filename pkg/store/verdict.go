@@ -30,10 +30,23 @@ type execer interface {
 }
 
 // AddVerdict records v; At defaults to now (UTC, RFC 3339).
-func (s *Store) AddVerdict(ctx context.Context, v Verdict) error { return addVerdict(ctx, s.db, v) }
+func (s *Store) AddVerdict(ctx context.Context, v Verdict) error {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return guardErr
+	}
+	defer done()
+	return addVerdict(ctx, s.db, v)
+}
 
 // AddVerdicts records vs in one transaction: all of them, or none.
 func (s *Store) AddVerdicts(ctx context.Context, vs []Verdict) error {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return guardErr
+	}
+	defer done()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -82,6 +95,12 @@ func nonNilMap(m map[string]float64) map[string]float64 {
 // HasVerdict reports whether message n already has a verdict from stage with
 // this provenance and time (so an import can be re-run safely).
 func (s *Store) HasVerdict(ctx context.Context, n int64, stage, provenance, at string) (bool, error) {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return false, guardErr
+	}
+	defer done()
+
 	var found int
 	err := s.db.QueryRowContext(ctx, "select count(*) from verdicts where n=? and stage=? and provenance=? and at=?", n, stage, provenance, at).Scan(&found)
 	return found > 0, err
@@ -89,6 +108,12 @@ func (s *Store) HasVerdict(ctx context.Context, n int64, stage, provenance, at s
 
 // Verdicts returns message n's verdict history, oldest first.
 func (s *Store) Verdicts(ctx context.Context, n int64) ([]Verdict, error) {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer done()
+
 	rows, err := s.db.QueryContext(ctx, `select id, n, stage, labels, scores, action, reason, cost_usd, final,
 		provenance, error, at from verdicts where n=? order by id`, n)
 	if err != nil {
@@ -101,6 +126,12 @@ func (s *Store) Verdicts(ctx context.Context, n int64) ([]Verdict, error) {
 // from stage yet (a recorded failure does not count, so it is retried),
 // newest first.
 func (s *Store) Pending(ctx context.Context, f Filter, stage string) ([]Message, error) {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer done()
+
 	w, args := where(f)
 	args = append(args, stage)
 	rows, err := s.db.QueryContext(ctx, "select "+columns+" from messages where "+w+
@@ -123,6 +154,12 @@ func (s *Store) Pending(ctx context.Context, f Filter, stage string) ([]Message,
 // SentRecipients returns every distinct, lower-cased recipient of synced Sent
 // Items, sorted.
 func (s *Store) SentRecipients(ctx context.Context) ([]string, error) {
+	done, guardErr := s.legacy(ctx)
+	if guardErr != nil {
+		return nil, guardErr
+	}
+	defer done()
+
 	rows, err := s.db.QueryContext(ctx, `select distinct lower(value) from messages, json_each(messages.recipients)
 		where folder='sentitems' and removed=0 order by 1`)
 	if err != nil {
