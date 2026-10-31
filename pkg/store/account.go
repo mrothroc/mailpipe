@@ -545,23 +545,10 @@ func (a *AccountStore) InvalidateIMAPEpoch(ctx context.Context, scope mailbox.Co
 		if info.MailboxID == mailboxID && info.UIDValidity == validity {
 			return nil
 		}
-		if _, e = q.ExecContext(ctx, "update messages set identity_valid=0 where n in(select n from imap_locators where account_id=? and provider_id=? and collection_id=? and valid=1)", a.account.ID, a.account.ProviderID, scope.CollectionID); e != nil {
+		if e = a.updateIMAPEpoch(ctx, q, scope, mailboxID, validity); e != nil {
 			return e
 		}
-		if _, e = q.ExecContext(ctx, "update imap_locators set valid=0 where account_id=? and provider_id=? and collection_id=?", a.account.ID, a.account.ProviderID, scope.CollectionID); e != nil {
-			return e
-		}
-		if _, e = q.ExecContext(ctx, "delete from memberships where account_id=? and provider_id=? and collection_id=?", a.account.ID, a.account.ProviderID, scope.CollectionID); e != nil {
-			return e
-		}
-		if _, e = q.ExecContext(ctx, "update messages set "+membershipProjection+" where account_id=? and provider_id=? and n in(select n from imap_locators where account_id=? and provider_id=? and collection_id=? and epoch_generation=?)", a.account.ID, a.account.ProviderID, a.account.ID, a.account.ProviderID, scope.CollectionID, info.EpochGeneration); e != nil {
-			return e
-		}
-		if _, e = q.ExecContext(ctx, "update collections set mailbox_id=?,uidvalidity=?,epoch_generation=epoch_generation+1 where account_id=? and provider_id=? and collection_id=?", mailboxID, validity, a.account.ID, a.account.ProviderID, scope.CollectionID); e != nil {
-			return e
-		}
-		_, e = q.ExecContext(ctx, "delete from provider_sync_state where account_id=? and provider_id=? and collection_id=?", a.account.ID, a.account.ProviderID, scope.CollectionID)
-		return e
+		return a.retireIMAPEpoch(ctx, q, scope, info.EpochGeneration)
 	})
 }
 
