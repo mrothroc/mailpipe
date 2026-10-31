@@ -123,6 +123,13 @@ func newAccountCommand(deps Deps) *cobra.Command {
 			if cfg.Collections == nil {
 				cfg.Collections = map[string]string{}
 			}
+			for _, name := range []string{"inbox", "deleteditems", "sentitems", "junkemail"} {
+				collection, e := resolveCollection(ctx, p, name)
+				if e != nil {
+					return fmt.Errorf("database bound but routing resolution failed; retry account bind --execute: %w", e)
+				}
+				cfg.Collections[name] = string(collection.Ref.CollectionID)
+			}
 			for name, ref := range verifier.folders {
 				cfg.Collections[name] = string(ref.CollectionID)
 			}

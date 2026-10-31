@@ -286,6 +286,11 @@ func (g *fakeGraph) Do(ctx context.Context, method, path string, q url.Values, _
 	case method == http.MethodPost && path == rulesPath:
 		g.ruleSeq++
 		in["id"] = fmt.Sprintf("R%d", g.ruleSeq)
+		for _, r := range g.rules {
+			if ruleSequenceNumber(r["sequence"]) >= ruleSequenceNumber(in["sequence"]) {
+				r["sequence"] = ruleSequenceNumber(r["sequence"]) + 1
+			}
+		}
 		g.rules = append(g.rules, in)
 		return nil
 	case method == http.MethodPatch:
@@ -300,7 +305,13 @@ func (g *fakeGraph) Do(ctx context.Context, method, path string, q url.Values, _
 	case method == http.MethodDelete:
 		for i, r := range g.rules {
 			if r["id"] == id {
+				sequence := ruleSequenceNumber(r["sequence"])
 				g.rules = append(g.rules[:i], g.rules[i+1:]...)
+				for _, other := range g.rules {
+					if ruleSequenceNumber(other["sequence"]) > sequence {
+						other["sequence"] = ruleSequenceNumber(other["sequence"]) - 1
+					}
+				}
 				return nil
 			}
 		}
@@ -719,3 +730,13 @@ func TestUnconfiguredSignInIsStaleWithInitHint(t *testing.T) {
 type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+func ruleSequenceNumber(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
+}

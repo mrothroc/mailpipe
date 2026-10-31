@@ -5,10 +5,12 @@ import (
 	"context"
 	"errors"
 	"github.com/mrothroc/mailpipe/pkg/graph"
+	"io"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -35,40 +37,83 @@ func TestWriteRawCompleteAndBounded(t *testing.T) {
 	}
 }
 
+type retryTransport struct {
+	calls  atomic.Int32
+	closed atomic.Bool
+}
+type closedBody struct {
+	io.Reader
+	closed *atomic.Bool
+}
+
+func (b closedBody) Close() error { b.closed.Store(true); return nil }
+func (r *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.calls.Add(1)
+	return &http.Response{StatusCode: 429, Header: http.Header{"Retry-After": []string{"60"}}, Body: closedBody{strings.NewReader("throttled"), &r.closed}, Request: req}, nil
+}
 func TestDefaultRetryWaitHonorsCancellation(t *testing.T) {
-	var calls atomic.Int32
-	reached := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if calls.Add(1) == 1 {
-			close(reached)
+	for _, blocking := range []bool{false, true} {
+		name := "production"
+		if blocking {
+			name = "blocking-negative-control"
 		}
-		w.Header().Set("Retry-After", "60")
-		w.WriteHeader(429)
-	}))
-	defer server.Close()
-	c := graph.New(func(context.Context) (string, error) { return "invented-token", nil })
-	c.Base = server.URL
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- c.Get(ctx, "/read", nil, nil) }()
-	<-reached
-	// Give the completed local response a chance to enter its 60-second wait.
-	select {
-	case err := <-done:
-		t.Fatalf("request returned before cancellation: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-	cancel()
-	select {
-	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("retry wait ignored cancellation")
-	}
-	if calls.Load() != 1 {
-		t.Fatal("canceled request replayed")
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				transport := &retryTransport{}
+				c := graph.New(func(context.Context) (string, error) { return "invented-token", nil })
+				c.Base = "https://mail.example.org"
+				c.HTTP = &http.Client{Transport: transport}
+				release := make(chan struct{})
+				var waits atomic.Int32
+				if blocking {
+					c.Sleep = func(time.Duration) { waits.Add(1); <-release }
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- c.Get(ctx, "/read", nil, nil) }()
+				synctest.Wait() // response consumed; the only remaining block is retry wait
+				if !transport.closed.Load() || transport.calls.Load() != 1 {
+					t.Fatal("retry response not consumed")
+				}
+				cancel()
+				synctest.Wait()
+				var result error
+				prompt := false
+				select {
+				case result = <-done:
+					prompt = true
+				default:
+				}
+				if blocking {
+					close(release)
+					synctest.Wait()
+					if !prompt {
+						result = <-done
+					}
+					if waits.Load() != 1 {
+						t.Fatal("negative control never entered blocking wait")
+					}
+				}
+				if !prompt && !blocking {
+					// Bound teardown even for a regressed production wait. This timeout is
+					// only cleanup; synctest.Wait above established the phase without time.
+					select {
+					case result = <-done:
+					case <-time.After(61 * time.Second):
+						t.Fatal("retry worker did not stop during bounded teardown")
+					}
+				}
+				if prompt == blocking {
+					t.Fatal("cancellation probe did not distinguish production from entered blocking wait")
+				}
+				if !errors.Is(result, context.Canceled) {
+					t.Fatal(result)
+				}
+				if transport.calls.Load() != 1 {
+					t.Fatal("canceled request replayed")
+				}
+			})
+		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -226,5 +227,156 @@ func TestJunkRulesMatchSendersAndMoveToJunk(t *testing.T) {
 	}
 	if !reflect.DeepEqual(g.calls, wantCalls) {
 		t.Fatalf("calls\n%+v\nwant\n%+v (the Junk folder id is looked up once)", g.calls, wantCalls)
+	}
+}
+
+// orderedGraph models server insertion/removal resequencing, not static replies.
+type orderedGraph struct {
+	fakeGraph
+	rows      []map[string]any
+	mutations []string
+	after     func(string, []map[string]any)
+}
+
+func (g *orderedGraph) Do(ctx context.Context, method, path string, q url.Values, prefer string, body, out any) error {
+	if path == "/me/mailFolders/junkemail" {
+		return json.Unmarshal([]byte(`{"id":"JUNK"}`), out)
+	}
+	if method == "GET" {
+		b, _ := json.Marshal(map[string]any{"value": g.rows})
+		return json.Unmarshal(b, out)
+	}
+	g.mutations = append(g.mutations, method)
+	b, _ := json.Marshal(body)
+	var in map[string]any
+	_ = json.Unmarshal(b, &in)
+	id := strings.TrimPrefix(path, "/me/mailFolders/inbox/messageRules/")
+	switch method {
+	case "POST":
+		seq := in["sequence"].(float64)
+		for _, r := range g.rows {
+			if r["sequence"].(float64) >= seq {
+				r["sequence"] = r["sequence"].(float64) + 1
+			}
+		}
+		in["id"] = "new" + strconv.Itoa(len(g.mutations))
+		g.rows = append(g.rows, in)
+	case "DELETE":
+		for i, r := range g.rows {
+			if r["id"] == id {
+				seq := r["sequence"].(float64)
+				g.rows = append(g.rows[:i], g.rows[i+1:]...)
+				for _, r := range g.rows {
+					if r["sequence"].(float64) > seq {
+						r["sequence"] = r["sequence"].(float64) - 1
+					}
+				}
+				break
+			}
+		}
+	case "PATCH":
+		for _, r := range g.rows {
+			if r["id"] == id {
+				for k, v := range in {
+					r[k] = v
+				}
+			}
+		}
+	}
+	if g.after != nil {
+		g.after(method, g.rows)
+	}
+	return nil
+}
+func orderedFixture(t *testing.T) *orderedGraph {
+	t.Helper()
+	g := &orderedGraph{}
+	err := json.Unmarshal([]byte(`[
+ {"id":"O","displayName":"Owner","sequence":1,"isEnabled":true,"conditions":{},"actions":{"markAsRead":true}},
+ {"id":"A","displayName":"mailpipe blocked #1","sequence":2,"isEnabled":true,"conditions":{"fromAddresses":[{"emailAddress":{"address":"old@example.org"}}],"subjectContains":["invented"]},"actions":{"delete":true,"stopProcessingRules":true}},
+ {"id":"B","displayName":"mailpipe blocked #2","sequence":3,"isEnabled":true,"conditions":{"fromAddresses":[{"emailAddress":{"address":"b@example.org"}}]},"actions":{"delete":true,"stopProcessingRules":true}},
+ {"id":"C","displayName":"mailpipe plan 1 #1","sequence":4,"isEnabled":true,"conditions":{},"actions":{"delete":true}}]`), &g.rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+func TestReviewedManagedOwnSequenceEffects(t *testing.T) {
+	for _, mode := range []string{"replace", "deletes", "mixed", "diff"} {
+		t.Run(mode, func(t *testing.T) {
+			g := orderedFixture(t)
+			s := rules.NewGraphRules(g)
+			listed, err := s.List(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var changes []rules.Change
+			switch mode {
+			case "replace":
+				changes = []rules.Change{{Op: rules.Replace, Rule: rules.Rule{ID: "A", Name: listed[1].Name, Sequence: 2, Senders: []string{"a@example.org"}, Enabled: true, Exact: true}}}
+			case "deletes":
+				changes = []rules.Change{{Op: rules.Delete, Rule: listed[1]}, {Op: rules.Delete, Rule: listed[2]}, {Op: rules.Delete, Rule: listed[3]}}
+			case "diff":
+				changes = rules.Diff([]rules.Rule{
+					{Name: listed[1].Name, Senders: []string{"a@example.org"}, Enabled: true, Exact: true},
+					{Name: listed[2].Name, Senders: []string{"updated@example.org"}, Enabled: true, Exact: true},
+					{Name: "mailpipe blocked #3", Senders: []string{"d@example.org"}, Enabled: true, Exact: true},
+				}, listed)
+			case "mixed":
+				changes = []rules.Change{{Op: rules.Delete, Rule: listed[1]}, {Op: rules.Update, Rule: rules.Rule{ID: "B", Name: listed[2].Name, Sequence: 3, Senders: []string{"updated@example.org"}, Enabled: true, Exact: true}}, {Op: rules.Replace, Rule: rules.Rule{ID: "C", Name: listed[3].Name, Sequence: 4, Senders: []string{"c@example.org"}, Enabled: true, Exact: true}}, {Op: rules.Create, Rule: rules.Rule{Name: "mailpipe blocked #3", Sequence: 5, Senders: []string{"d@example.org"}, Enabled: true, Exact: true}}}
+			}
+			n, err := s.ExecuteReviewed(context.Background(), changes)
+			if err != nil || n != len(changes) {
+				t.Fatalf("done=%d mutations=%v err=%v", n, g.mutations, err)
+			}
+			after, err := s.List(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range after {
+				if r.ID == "O" && (r.Name != "Owner" || r.Sequence != 1) {
+					t.Fatalf("owner changed %+v", r)
+				}
+			}
+			if mode == "replace" && (len(g.mutations) != 2 || g.mutations[0] != "POST" || g.mutations[1] != "DELETE") {
+				t.Fatal(g.mutations)
+			}
+		})
+	}
+}
+func TestReviewedManagedRejectsExternalEffectsDuringOwnShift(t *testing.T) {
+	for _, field := range []string{"ownership", "shape", "order", "owner-shape", "new-rule"} {
+		t.Run(field, func(t *testing.T) {
+			g := orderedFixture(t)
+			s := rules.NewGraphRules(g)
+			listed, err := s.List(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			g.after = func(method string, rows []map[string]any) {
+				if method != "POST" {
+					return
+				}
+				switch field {
+				case "ownership":
+					rows[1]["displayName"] = "Owner changed"
+				case "shape":
+					rows[1]["extraUnknown"] = true
+				case "order":
+					rows[1]["sequence"], rows[2]["sequence"] = rows[2]["sequence"], rows[1]["sequence"]
+				case "owner-shape":
+					rows[0]["actions"] = map[string]any{"markAsRead": false}
+				case "new-rule":
+					rows[len(rows)-1]["actions"] = map[string]any{"forwardTo": []string{"external@example.org"}}
+				}
+			}
+			_, err = s.ExecuteReviewed(context.Background(), []rules.Change{{Op: rules.Replace, Rule: rules.Rule{ID: "A", Name: listed[1].Name, Sequence: 2, Senders: []string{"a@example.org"}, Enabled: true, Exact: true}}})
+			if err == nil {
+				t.Fatal("external edit adopted")
+			}
+			if len(g.mutations) != 1 {
+				t.Fatalf("stale delete/replay %v", g.mutations)
+			}
+		})
 	}
 }

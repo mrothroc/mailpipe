@@ -3,7 +3,9 @@ package cli_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"github.com/mrothroc/agentio"
+	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/graphmail"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/msauth"
@@ -301,5 +303,180 @@ func TestGraphReceivedPrecisionAndEmptyBodyCache(t *testing.T) {
 	e.auth.signedIn = false
 	if code, _, stderr := e.run("show", "1"); code != 0 || e.graph.bodyCalls.Load() != before {
 		t.Fatalf("empty cache fetched again %d %s", code, stderr)
+	}
+}
+
+func TestHistoryOnlyBindingPopulatesOfflineRoutes(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	s, err := store.Open(e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Upsert(ctx, "inbox", store.Record{GraphID: "retired", Sender: "history@example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Remove(ctx, "inbox", "retired"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prep, err := store.PrepareLegacyBinding(ctx, e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prep.Live) != 0 {
+		t.Fatal("fixture has live rows")
+	}
+	if code, _, stderr := e.run("account", "bind", "--execute", "--confirm-history", prep.Digest()); code != 0 {
+		t.Fatalf("bind %d %s", code, stderr)
+	}
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"inbox", "deleteditems", "sentitems", "junkemail"} {
+		if cfg.Collections[name] != "F-"+name {
+			t.Fatalf("missing route %s: %+v", name, cfg.Collections)
+		}
+	}
+	e.auth.signedIn = false
+	for _, folder := range []string{"inbox", "deleteditems", "sentitems", "junkemail"} {
+		if code, _, stderr := e.run("ls", "--folder", folder); code != agentio.ExitNoData {
+			t.Fatalf("offline %s: %d %s", folder, code, stderr)
+		}
+	}
+	if _, err = store.Open(e.db); err == nil {
+		t.Fatal("permanent binding lost")
+	}
+}
+
+type bindingResolver struct {
+	mailbox.Provider
+	resolve func(context.Context, string) (mailbox.Collection, error)
+}
+
+func (p bindingResolver) Resolve(ctx context.Context, name string) (mailbox.Collection, error) {
+	return p.resolve(ctx, name)
+}
+
+func TestBindingPreservesVerifiedHistoricalAlias(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	s, err := store.Open(e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Upsert(ctx, "Archive", store.Record{GraphID: "custom", InternetMessageID: "<custom@example.org>", Sender: "history@example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	e.graph.server["custom"] = serverMsg{"Archive", "<custom@example.org>", "history@example.org"}
+	prep, err := store.PrepareLegacyBinding(ctx, e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := e.run("account", "bind", "--execute", "--confirm-history", prep.Digest()); code != 0 {
+		t.Fatalf("bind %d %s", code, stderr)
+	}
+	cfg, err := config.Load(config.DefaultPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Collections["Archive"] != "F-Archive" {
+		t.Fatalf("verified alias lost %+v", cfg.Collections)
+	}
+	e.auth.signedIn = false
+	if code, out, stderr := e.run("ls", "--folder", "Archive"); code != 0 || !strings.Contains(out, "history@example.org") || !strings.Contains(out, "Archive") {
+		t.Fatalf("offline alias %d %q %s", code, out, stderr)
+	}
+}
+func TestBindingRouteFailureRecoversOnlySameAccount(t *testing.T) {
+	for _, mode := range []string{"resolve", "save"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			s, err := store.Open(e.db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.Upsert(ctx, "inbox", store.Record{GraphID: "retired", Sender: "history@example.org"}); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = s.Remove(ctx, "inbox", "retired")
+			_ = s.Close()
+			prep, err := store.PrepareLegacyBinding(ctx, e.db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			original, err := os.ReadFile(config.DefaultPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			subject, err := e.auth.Subject(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := graphmail.New(e.graph, subject.Account())
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.provider = bindingResolver{Provider: p, resolve: func(ctx context.Context, name string) (mailbox.Collection, error) {
+				if name == "junkemail" {
+					if mode == "resolve" {
+						return mailbox.Collection{}, errors.New("invented resolution failure")
+					}
+					if err := os.Remove(config.DefaultPath()); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Mkdir(config.DefaultPath(), 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return p.Resolve(ctx, name)
+			}}
+			if code, _, stderr := e.run("account", "bind", "--execute", "--confirm-history", prep.Digest()); code != agentio.ExitRuntime || !strings.Contains(stderr, "retry account bind") {
+				t.Fatalf("partial failure %d %s", code, stderr)
+			}
+			if mode == "save" {
+				if err := os.Remove(config.DefaultPath()); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(config.DefaultPath(), original, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bound, err := store.OpenAccount(ctx, e.db, subject.Account())
+			if err != nil {
+				t.Fatal("binding was not permanent", err)
+			}
+			_ = bound.Close()
+			other := msauth.Subject{TenantID: subject.TenantID, ObjectID: "55555555-5555-4555-8555-555555555555"}
+			wrong, err := graphmail.New(e.graph, other.Account())
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.provider = wrong
+			if code, _, _ := e.run("account", "bind", "--execute"); code == 0 {
+				t.Fatal("different-account recovery succeeded")
+			}
+			e.provider = p
+			if code, _, stderr := e.run("account", "bind", "--execute"); code != 0 {
+				t.Fatalf("recovery %d %s", code, stderr)
+			}
+			cfg, err := config.Load(config.DefaultPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.AccountID != string(subject.Account().ID) {
+				t.Fatal("binding changed")
+			}
+			for _, name := range []string{"inbox", "deleteditems", "sentitems", "junkemail"} {
+				if cfg.Collections[name] != "F-"+name {
+					t.Fatalf("recovery route %s %+v", name, cfg.Collections)
+				}
+			}
+		})
 	}
 }
