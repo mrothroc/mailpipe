@@ -41,6 +41,7 @@ The table is generated from each package's doc comment (`tools/docgen`). Keep th
 | `pkg/stage` | Package stage defines the contract between mailpipe and the stages that judge messages. |
 | `pkg/store` | Package store persists mailbox metadata, account-bound identities, memberships and reviewed action history in private SQLite databases. |
 | `pkg/template` | Package template recognises the kinds of email a sender sends, so a record can be filed by rule instead of by hand. |
+| `tools/acceptance` | Command acceptance verifies synthetic candidate delivery and protects private acceptance evidence. |
 | `tools/docgen` | Command docgen generates and checks source-derived package documentation. |
 | `tools/security` | Command security checks public files for secrets and verifies Go release support. |
 <!-- /docgen:packages -->

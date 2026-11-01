@@ -10,16 +10,37 @@ It mirrors messages into SQLite, runs configurable classifiers, and turns their 
 
 Classifiers judge messages; policy and numbered plans control actions. Mailbox changes require an explicit `--execute`. Scans run on demand; no scheduler is installed.
 
+## Providers and acceptance
+
+Graph retains Microsoft 365 synchronization and reviewed mailbox/rule/PDF actions.
+Yahoo is a read-only pilot: real IMAP sync, complete bounded content, configured
+stages and local plans. Yahoo trash/archive/native filters and all `apply`,
+`rules apply` and `save --execute` paths are unavailable. Gmail implementation is
+deferred. Scan-time policy does not install Yahoo server filters.
+
+Fresh setup disables model and external-stage transfers until separate explicit
+account-scoped consent. See [provider setup and acceptance](docs/operations.md).
+Synthetic tests do not establish a completed live pilot. The candidate installation
+validation target is the required `macos-15` CI job; successful delivery and live
+acceptance require actual evidence for the candidate, not this documentation.
+
 ## Requirements
 
 - macOS, with access to the login Keychain. The current authentication implementation uses the macOS `security` command.
 - Homebrew for the recommended installation. Source builds require Git, Make and a supported Go release meeting the minimum in [go.mod](go.mod).
-- A Microsoft 365 mailbox and a Microsoft Entra app registration for device-code sign-in.
+- For Graph: a Microsoft 365 mailbox and Microsoft Entra app registration for device-code sign-in. For Yahoo: an account supporting the required full-view IMAP capabilities and an app password entered securely in the owning user session.
 - Network access for Microsoft Graph and any configured model provider. Source builds and security checks also fetch Go modules, release metadata and vulnerability data.
 - Optional: an OpenRouter account and API key for model stages. These stages send selected email content to OpenRouter and incur charges.
 - Optional: Google Chrome, Chromium or Microsoft Edge installed in `/Applications` for rendering email bodies to PDFs.
 
 ## Install with Homebrew
+
+The currently published formula installs **Graph-only v0.1.0**. It does not yet
+include the Yahoo commands described below. Yahoo is in the unreleased source
+candidate; use the [source build instructions](#build-and-development-setup) at a
+reviewed candidate commit to evaluate it. The required candidate CI job tests that
+source separately. A successful source test does not publish a new tap release.
+
 
 ```sh
 brew install mrothroc/tap/mailpipe
@@ -63,6 +84,31 @@ mailpipe auth status
 
 Follow the device-code instructions printed by `auth login` in a browser. Authentication tokens are stored in the macOS Keychain, rather than the repository or configuration files.
 
+## Configure Yahoo read-only access
+
+These commands require the unreleased reviewed source candidate, not the current
+Graph-only v0.1.0 Homebrew installation. Build the intended candidate with
+`make check` as above and use its absolute `bin/mailpipe` path to avoid accidentally
+running an older executable on PATH. Live setup still requires specific consent
+and the owning user session; see [operations](docs/operations.md).
+
+
+Use separate private configuration/database paths for each account. With the owner
+attending their own terminal:
+
+```sh
+mailpipe config init --provider yahoo --login alex@example.com
+mailpipe auth login
+mailpipe account show
+mailpipe account capabilities
+```
+
+The login above is invented; the owner supplies their exact login privately. The
+password prompt hides input. Never place passwords in argv, environment or files.
+Changing endpoint/login requires a different database; there is no rebind. Follow
+[operations](docs/operations.md) for endpoint grammar, recovery and the separately
+consented live acceptance procedure. Engineering/CI does not run these live steps.
+
 ## Configure classifiers and policy
 
 ```sh
@@ -79,7 +125,7 @@ For model stages, create a generic-password item in Keychain Access with service
 
 Optional recipient filtering is documented in [stages.md](docs/stages.md). Custom classifier implementations, sender scopes, prompts and thresholds belong outside this repository; see [private hooks](docs/hooks.md).
 
-## Run a reviewed cleanup
+## Run a reviewed Graph cleanup
 
 ```sh
 mailpipe sync
