@@ -6,20 +6,22 @@ import (
 	"io"
 	"sync"
 
+	"github.com/mrothroc/mailpipe/pkg/document"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 )
 
 // scopedRead delegates the already-held operation lease. It never reenters the
 // public Client gate or holds a lock across a loader/writer/network call.
 type scopedRead struct {
-	mu           sync.Mutex
-	s            *session
-	ctx          context.Context
-	o            Occurrence
-	wire         WireMetadata
-	limit        int64
-	active, busy bool
-	failure      error
+	mu            sync.Mutex
+	s             *session
+	ctx           context.Context
+	o             Occurrence
+	wire          WireMetadata
+	limit         int64
+	contentLimits document.Limits
+	active, busy  bool
+	failure       error
 }
 
 func (a *scopedRead) revoke() error {
@@ -74,6 +76,11 @@ func (a *scopedRead) ReadSource(ctx context.Context, w io.Writer) (err error) {
 	size := a.wire.Size
 	if int64(size) > a.limit {
 		return failure("complete source exceeds byte limit")
+	}
+	if a, ok := w.(interface{ AnnounceSourceSize(int64) error }); ok {
+		if e := a.AnnounceSourceSize(int64(size)); e != nil {
+			return safe("source reservation failed", e)
+		}
 	}
 	offset := uint32(0)
 	for {

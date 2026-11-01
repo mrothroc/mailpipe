@@ -15,6 +15,7 @@ import (
 
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
+	"github.com/mrothroc/mailpipe/pkg/document"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/store"
 	"github.com/mrothroc/mailpipe/pkg/template"
@@ -100,8 +101,14 @@ func fingerprint(set *template.Set, m store.Message, body string) checkRow {
 func newTemplatesCheckCommand(deps Deps) *cobra.Command {
 	cmd := newAgentCommand("check [--folder <name>] [--from <text>] [--labelled <stage:label>] [--expect <manifest.tsv>]",
 		"Fingerprint stored mail against the templates (free: no model is asked) and show where each match would be filed", cobra.NoArgs,
-		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) (commandErr error) {
 			ctx := cmd.Context()
+			scope, scopeErr := document.NewScope(document.Limits{})
+			if scopeErr != nil {
+				return scopeErr
+			}
+			defer func() { commandErr = errors.Join(commandErr, scope.CloseContext(ctx)) }()
+			ctx = document.WithScope(ctx, scope)
 			set, err := loadTemplates(config.DefaultTemplatesPath())
 			if err != nil {
 				return err
@@ -209,8 +216,14 @@ func compareExpected(r checkRow, want string, inManifest bool) string {
 func newTemplatesAnchorsCommand(deps Deps) *cobra.Command {
 	cmd := newAgentCommand("anchors --from <sender> [--subject <regexp>] [--folder <name>]",
 		"List the lines common to every stored email from a sender: candidate anchors for its template", cobra.NoArgs,
-		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) (commandErr error) {
 			ctx := cmd.Context()
+			scope, scopeErr := document.NewScope(document.Limits{})
+			if scopeErr != nil {
+				return scopeErr
+			}
+			defer func() { commandErr = errors.Join(commandErr, scope.CloseContext(ctx)) }()
+			ctx = document.WithScope(ctx, scope)
 			from, _ := cmd.Flags().GetString("from")
 			folder, _ := cmd.Flags().GetString("folder")
 			subjectFlag, _ := cmd.Flags().GetString("subject")

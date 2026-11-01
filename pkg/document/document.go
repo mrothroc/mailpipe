@@ -6,16 +6,11 @@ package document
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"html"
-	"io"
-	"mime"
-	"mime/multipart"
-	"mime/quotedprintable"
-	"net/mail"
-	"net/textproto"
 	"net/url"
 	"regexp"
 	"strings"
@@ -41,133 +36,28 @@ type Doc struct {
 	inline      map[string]Part // by Content-ID, without the angle brackets
 }
 
-// maxDepth bounds multipart nesting, against a hostile message.
-const maxDepth = 20
-
-var words = mime.WordDecoder{CharsetReader: func(charset string, r io.Reader) (io.Reader, error) {
-	b, err := io.ReadAll(r)
-	if err != nil {
-		return nil, err
+// Parse is the finite compatibility wrapper around the shared streaming parser.
+func Parse(raw []byte) (out Doc, err error) {
+	s, e := NewScope(Limits{})
+	if e != nil {
+		return Doc{}, e
 	}
-	s, ok := decodeCharset(b, charset)
-	if !ok {
-		return nil, fmt.Errorf("unsupported charset %q", charset)
-	}
-	return strings.NewReader(s), nil
-}}
-
-// Parse reads a message's MIME source.
-func Parse(raw []byte) (Doc, error) {
-	m, err := mail.ReadMessage(bytes.NewReader(raw))
-	if err != nil {
-		return Doc{}, fmt.Errorf("read message: %w", err)
-	}
-	header := func(k string) string {
-		v := m.Header.Get(k)
-		if d, err := words.DecodeHeader(v); err == nil {
-			return d
+	defer func() {
+		err = errors.Join(err, s.Close())
+		if err != nil {
+			out = Doc{}
 		}
-		return v
+	}()
+	if int64(len(raw)) > s.limits.RawBytes {
+		return Doc{}, incomplete("raw byte limit exceeded", nil)
 	}
-	if m.Header.Get("From") == "" && m.Header.Get("Subject") == "" {
-		return Doc{}, errors.New("read message: no From or Subject header")
+	d, e := ParseReader(context.Background(), bytes.NewReader(raw), s)
+	if e != nil {
+		return Doc{}, e
 	}
-	d := Doc{MessageID: strings.TrimSpace(m.Header.Get("Message-Id")), From: header("From"), Subject: header("Subject"),
-		inline: map[string]Part{}}
-	if t, err := m.Header.Date(); err == nil {
-		d.Date = t
-	}
-	if err := d.walk(textproto.MIMEHeader(m.Header), m.Body, 0); err != nil {
-		return Doc{}, err
-	}
-	return d, nil
-}
-
-func (d *Doc) walk(h textproto.MIMEHeader, body io.Reader, depth int) error {
-	if depth > maxDepth {
-		return errors.New("read message: multipart nesting too deep")
-	}
-	ct, params, err := mime.ParseMediaType(h.Get("Content-Type"))
-	if err != nil {
-		ct, params = "text/plain", map[string]string{}
-	}
-	if strings.HasPrefix(ct, "multipart/") {
-		mr := multipart.NewReader(body, params["boundary"])
-		for {
-			p, err := mr.NextRawPart()
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			if err != nil {
-				return fmt.Errorf("read message part: %w", err)
-			}
-			if err := d.walk(p.Header, p, depth+1); err != nil {
-				return err
-			}
-		}
-	}
-	data, err := io.ReadAll(decoded(h.Get("Content-Transfer-Encoding"), body))
-	if err != nil {
-		return fmt.Errorf("read message part: %w", err)
-	}
-	disposition, dparams, _ := mime.ParseMediaType(h.Get("Content-Disposition"))
-	filename := dparams["filename"]
-	if filename == "" {
-		filename = params["name"]
-	}
-	if filename != "" {
-		if f, err := words.DecodeHeader(filename); err == nil {
-			filename = f
-		}
-	}
-	attached := disposition == "attachment"
-	cid := strings.Trim(strings.TrimSpace(h.Get("Content-Id")), "<>")
-	switch {
-	case ct == "text/plain" && !attached && filename == "" && d.Text == "":
-		d.Text, _ = decodeCharset(data, params["charset"])
-	case ct == "text/html" && !attached && filename == "" && d.HTML == "":
-		d.HTML, _ = decodeCharset(data, params["charset"])
-	case cid != "" && strings.HasPrefix(ct, "image/") && !attached:
-		d.inline[cid] = Part{Filename: filename, ContentType: ct, Data: data}
-	case attached || filename != "":
-		d.Attachments = append(d.Attachments, Part{Filename: filename, ContentType: ct, Data: data})
-	}
-	return nil
-}
-
-func decoded(encoding string, r io.Reader) io.Reader {
-	switch strings.ToLower(strings.TrimSpace(encoding)) {
-	case "base64":
-		return base64.NewDecoder(base64.StdEncoding, r)
-	case "quoted-printable":
-		return quotedprintable.NewReader(r)
-	}
-	return r
-}
-
-// cp1252 maps the Windows-1252 bytes 0x80-0x9F that differ from Latin-1.
-var cp1252 = map[byte]rune{0x80: '€', 0x82: '‚', 0x83: 'ƒ', 0x84: '„', 0x85: '…', 0x86: '†', 0x87: '‡', 0x88: 'ˆ', 0x89: '‰',
-	0x8A: 'Š', 0x8B: '‹', 0x8C: 'Œ', 0x8E: 'Ž', 0x91: '‘', 0x92: '’', 0x93: '“', 0x94: '”', 0x95: '•', 0x96: '–', 0x97: '—',
-	0x98: '˜', 0x99: '™', 0x9A: 'š', 0x9B: '›', 0x9C: 'œ', 0x9E: 'ž', 0x9F: 'Ÿ'}
-
-// decodeCharset converts b from charset to UTF-8, reporting whether the
-// charset is one it knows; an unknown one is passed through.
-func decodeCharset(b []byte, charset string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(charset)) {
-	case "", "utf-8", "utf8", "us-ascii", "ascii":
-		return string(b), true
-	case "iso-8859-1", "latin1", "latin-1", "windows-1252", "cp1252":
-		var s strings.Builder
-		for _, c := range b {
-			if r, ok := cp1252[c]; ok {
-				s.WriteRune(r)
-			} else {
-				s.WriteRune(rune(c))
-			}
-		}
-		return s.String(), true
-	}
-	return string(b), false
+	out, err = d.Materialize(context.Background())
+	err = errors.Join(err, d.Close())
+	return out, err
 }
 
 // PDFs returns the PDF attachments.

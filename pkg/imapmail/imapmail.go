@@ -1,5 +1,5 @@
-// Package imapmail provides verified TLS, read-only IMAP discovery and bounded
-// occurrence synchronization, using a required scoped metadata collaborator.
+// Package imapmail provides verified TLS, read-only IMAP discovery, bounded
+// complete content reads and occurrence synchronization using scoped metadata evidence.
 package imapmail
 
 import (
@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mrothroc/mailpipe/pkg/document"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/mailsync"
 	"github.com/mrothroc/mailpipe/pkg/store"
@@ -44,6 +45,7 @@ type Config struct {
 	RoleMappings                                    map[Role]string
 	UIDWindow, MaxMessages, MaxWindows, MaxAttempts int
 	SourceBytes                                     int64
+	ContentLimits                                   document.Limits
 }
 type Credentials struct {
 	Account         mailbox.Account
@@ -125,7 +127,7 @@ func (e *Error) Unwrap() error  { return e.cause }
 func failure(code string) error { return &Error{Code: code, detail: code} }
 func safe(code string, e error) error {
 	var cause error
-	for _, sentinel := range []error{context.Canceled, context.DeadlineExceeded, mailbox.ErrAccountMismatch, mailbox.ErrStaleIdentity, mailsync.ErrCleanup, io.ErrShortWrite} {
+	for _, sentinel := range []error{context.Canceled, context.DeadlineExceeded, mailbox.ErrAccountMismatch, mailbox.ErrStaleIdentity, mailsync.ErrCleanup, io.ErrShortWrite, document.ErrIncomplete, document.ErrCleanup} {
 		if errors.Is(e, sentinel) {
 			cause = errors.Join(cause, sentinel)
 		}
@@ -166,6 +168,7 @@ func (realClock) Wait(ctx context.Context, d time.Duration) error {
 type Client struct {
 	runPass     func(context.Context, *store.AccountStore, mailsync.PassSpec, mailsync.Scan) error
 	cfg         Config
+	content     *document.Scope
 	credentials CredentialFunc
 	gate        chan struct{}
 	mu          sync.Mutex
@@ -177,6 +180,11 @@ type Client struct {
 }
 
 func New(cfg Config, credentials CredentialFunc) (*Client, error) {
+	var limitErr error
+	cfg.ContentLimits, limitErr = cfg.ContentLimits.Resolve()
+	if limitErr != nil {
+		return nil, limitErr
+	}
 	if e := cfg.Account.Validate(); e != nil {
 		return nil, safe("invalid account", e)
 	}
@@ -210,6 +218,7 @@ func New(cfg Config, credentials CredentialFunc) (*Client, error) {
 	if cfg.UIDWindow < 1 || cfg.UIDWindow > 1000 || cfg.MaxMessages < 1 || cfg.MaxMessages > 100000 || cfg.MaxWindows < 1 || cfg.MaxWindows > 100000 || cfg.MaxAttempts < 1 || cfg.MaxAttempts > 16 || cfg.SourceBytes < 1 || cfg.SourceBytes > 64<<20 {
 		return nil, failure("invalid finite resource limit")
 	}
+	cfg.SourceBytes = min(cfg.SourceBytes, cfg.ContentLimits.RawBytes)
 	mappings := make(map[Role]string, len(cfg.RoleMappings))
 	for role, name := range cfg.RoleMappings {
 		if role != Sent && role != Trash && role != Junk {
@@ -231,9 +240,13 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	c.closed = true
 	cancel := c.cancel
+	scope := c.content
 	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if scope != nil {
+		return scope.Close()
 	}
 	return nil
 }

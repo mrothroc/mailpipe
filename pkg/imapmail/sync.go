@@ -260,7 +260,7 @@ func (c *Client) SyncCollection(ctx context.Context, db *store.AccountStore, fol
 				if len(o.Ref.MessageID) > store.IMAPInventoryMaxFieldBytes || len(o.Ref.Locator) > store.IMAPInventoryMaxFieldBytes {
 					return failure("occurrence identity limit")
 				}
-				access := &scopedRead{s: s, ctx: scanCtx, o: o, wire: v.wire, limit: c.cfg.SourceBytes, active: true}
+				access := &scopedRead{s: s, ctx: scanCtx, o: o, wire: v.wire, limit: c.cfg.SourceBytes, active: true, contentLimits: c.cfg.ContentLimits}
 				metadata, loadErr := loader.Load(scanCtx, o, v.wire, access)
 				accessErr := access.revoke()
 				if loadErr != nil || accessErr != nil {

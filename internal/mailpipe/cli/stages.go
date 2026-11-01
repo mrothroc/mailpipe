@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mrothroc/mailpipe/pkg/document"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -96,23 +97,23 @@ func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageD
 	case "exec":
 		return stage.NewExec(d.Name, d.Command, time.Duration(d.TimeoutSeconds)*time.Second, d.NeedsBody), nil
 	case "hook":
-		var source func(context.Context, stage.Message) ([]byte, error)
+		var source func(context.Context, stage.Message, io.Writer) error
 		if d.NeedsSource {
 			graphFn := lazyProvider(ctx, deps)
-			source = func(ctx context.Context, m stage.Message) ([]byte, error) {
+			source = func(ctx context.Context, m stage.Message, w io.Writer) error {
 				g, err := graphFn()
 				if err != nil {
-					return nil, fatalIfAccess(err)
+					return fatalIfAccess(err)
 				}
 				ref, err := s.remoteRef(ctx, m.N)
 				if err != nil {
-					return nil, err
+					return err
 				}
-				raw, err := document.ReadSource(ctx, g, ref)
-				return raw, fatalIfAccess(err)
+				err = g.WriteMIME(ctx, ref, w)
+				return fatalIfAccess(err)
 			}
 		}
-		return stage.NewHook(d.Name, d.Command, time.Duration(d.TimeoutSeconds)*time.Second, d.NeedsBody, d.Senders, source, stage.NewBudget(maxCost)), nil
+		return stage.NewStreamingHook(d.Name, d.Command, time.Duration(d.TimeoutSeconds)*time.Second, d.NeedsBody, d.Senders, source, stage.NewBudget(maxCost)), nil
 	case "sender_cache":
 		// The source stage's history is loaded once for the whole run; each
 		// lookup is then in memory (one query instead of one per message).
@@ -236,8 +237,14 @@ func errText(err error) string {
 func newRunCommand(deps Deps) *cobra.Command {
 	cmd := newAgentCommand("run <stage> [--folder <name>] [--from <text>] [--since <when>] [--labelled <stage:label>] [--max-messages N] [--max-cost-usd X] [--workers N] [--rerun]",
 		"Run a stage over stored messages that it has not judged yet, recording its verdicts", cobra.ExactArgs(1),
-		func(cmd *cobra.Command, agent *agentio.AgentIO, args []string) error {
+		func(cmd *cobra.Command, agent *agentio.AgentIO, args []string) (commandErr error) {
 			ctx := cmd.Context()
+			scope, scopeErr := document.NewScope(document.Limits{})
+			if scopeErr != nil {
+				return scopeErr
+			}
+			defer func() { commandErr = errors.Join(commandErr, scope.CloseContext(ctx)) }()
+			ctx = document.WithScope(ctx, scope)
 			folder, _ := cmd.Flags().GetString("folder")
 			from, _ := cmd.Flags().GetString("from")
 			maxMessages, _ := cmd.Flags().GetInt("max-messages")
@@ -316,11 +323,12 @@ func newRunCommand(deps Deps) *cobra.Command {
 			var rows []runRow
 			sum, runErr := stage.Run(ctx, st, msgs, body, func(r stage.Result) error {
 				v := store.Verdict{N: r.Message.N, Stage: name, Error: errText(r.Err), CostUSD: r.Verdict.CostUSD}
-				if r.Err == nil {
+				if r.Err == nil || r.Protected {
+					v.Error = ""
 					v.Labels, v.Scores, v.Action, v.Reason = r.Verdict.Labels, r.Verdict.Scores, r.Verdict.Action, r.Verdict.Reason
 					v.CostUSD, v.Final, v.Provenance = r.Verdict.CostUSD, r.Verdict.Final, r.Verdict.Provenance
 				}
-				if errors.Is(r.Err, stage.ErrFatal) {
+				if errors.Is(r.Err, stage.ErrFatal) && !r.Protected {
 					return nil // a run-level failure is reported once, not stored against this message
 				}
 				rows = append(rows, runRow{pos: pos[r.Message.N], Result: r})

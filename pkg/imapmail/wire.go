@@ -38,8 +38,69 @@ type budgetReader struct {
 	r                 *bufio.Reader
 	response, command int
 	last              int
+	lex               wireLex
+	previous          wireLex
 }
 
+// wireLex rejects recursive list depth before the codec constructs its AST.
+// Quoted strings and literal payloads are opaque; UnreadRune restores state.
+type wireLex struct {
+	depth                                 int
+	quoted, escaped, header, afterLiteral bool
+	literal, number                       uint64
+}
+
+func (l *wireLex) accept(r rune) error {
+	if l.literal > 0 {
+		l.literal--
+		return nil
+	}
+	if l.quoted {
+		if l.escaped {
+			l.escaped = false
+		} else if r == '\\' {
+			l.escaped = true
+		} else if r == '"' {
+			l.quoted = false
+		}
+		return nil
+	}
+	if l.header {
+		if r >= '0' && r <= '9' {
+			if l.number > 65536 {
+				return errWireLimit
+			}
+			l.number = l.number*10 + uint64(r-'0')
+		} else if r == '}' {
+			l.header = false
+			l.afterLiteral = true
+		}
+		return nil
+	}
+	if l.afterLiteral {
+		if r == '\n' {
+			l.literal = l.number
+			l.number = 0
+			l.afterLiteral = false
+		}
+		return nil
+	}
+	switch r {
+	case '"':
+		l.quoted = true
+	case '{':
+		l.header = true
+		l.number = 0
+	case '(', '[':
+		l.depth++
+		if l.depth > 128 {
+			return errWireLimit
+		}
+	case ')', ']':
+		l.depth--
+	}
+	return nil
+}
 func (b *budgetReader) charge(n int) error {
 	b.response += n
 	b.command += n
@@ -57,6 +118,11 @@ func (b *budgetReader) Read(p []byte) (int, error) {
 		p = p[:limit]
 	}
 	n, e := b.r.Read(p)
+	for _, v := range p[:n] {
+		if x := b.lex.accept(rune(v)); x != nil {
+			return 0, x
+		}
+	}
 	b.last = 0
 	if f := b.charge(n); f != nil {
 		return n, f
@@ -65,9 +131,13 @@ func (b *budgetReader) Read(p []byte) (int, error) {
 }
 func (b *budgetReader) ReadRune() (rune, int, error) {
 	r, n, e := b.r.ReadRune()
+	b.previous = b.lex
 	b.last = n
 	if e != nil {
 		return r, n, e
+	}
+	if e = b.lex.accept(r); e != nil {
+		return 0, 0, e
 	}
 	if e = b.charge(n); e != nil {
 		return 0, 0, e
@@ -78,6 +148,7 @@ func (b *budgetReader) UnreadRune() error {
 	if e := b.r.UnreadRune(); e != nil {
 		return e
 	}
+	b.lex = b.previous
 	b.response -= b.last
 	b.command -= b.last
 	b.last = 0
@@ -137,6 +208,7 @@ func (s *session) close() error {
 
 func (s *session) read() (imap.Resp, error) {
 	s.budget.response = 0
+	s.budget.lex = wireLex{}
 	r, e := imap.ReadResp(s.reader)
 	if e != nil {
 		if s.ctx.Err() != nil {
