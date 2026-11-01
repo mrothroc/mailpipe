@@ -26,13 +26,15 @@ type Summary struct {
 }
 
 // Run evaluates msgs with s, using workers goroutines. When s needs bodies,
-// body fills each message in first. Every result goes to sink, which is called
+// body fills each message in first. Accepted results go to sink, which is called
 // from a single goroutine, so it needs no locking.
 //
 // A failure on one message (a timeout, a bad answer, a missing body) is
 // recorded and the run continues. An error wrapping ErrFatal, a sink error or
 // cancellation stops the run: no new message is started, and the error is
-// returned along with the summary of what finished.
+// returned along with the summary of accepted outcomes and all reported costs.
+// Completed protective keeps are still persisted during the drain; ordinary
+// results abandoned after a stop are discarded.
 func Run(ctx context.Context, s Stage, msgs []Message, body func(context.Context, *Message) error, sink func(Result) error, workers int) (Summary, error) {
 	workers = max(workers, 1)
 	parent := ctx
@@ -69,10 +71,13 @@ func Run(ctx context.Context, s Stage, msgs []Message, body func(context.Context
 	var sum Summary
 	var stop error
 	for r := range results {
-		if stop != nil {
-			continue // drain what was already in flight
+		// Calls already in flight can incur cost even when their normal verdict
+		// is abandoned. Protection must still replace any old destructive verdict.
+		sum.CostUSD += r.Verdict.CostUSD
+		if stop != nil && !r.Protected {
+			continue
 		}
-		if r.Err != nil && ctx.Err() != nil && errors.Is(r.Err, ctx.Err()) {
+		if !r.Protected && r.Err != nil && ctx.Err() != nil && errors.Is(r.Err, ctx.Err()) {
 			continue // abandoned because the run stopped, not a failure of this message
 		}
 		if r.Err != nil {
@@ -80,19 +85,17 @@ func Run(ctx context.Context, s Stage, msgs []Message, body func(context.Context
 		} else {
 			sum.Evaluated++
 		}
-		sum.CostUSD += r.Verdict.CostUSD // failed calls can be charged too
-		if err := sink(r); err != nil {
-			stop = fmt.Errorf("recording a result failed: %w", err)
-			cancel()
-			continue
-		}
 		if errors.Is(r.Err, ErrFatal) {
-			stop = r.Err
+			stop = errors.Join(stop, r.Err)
+			cancel()
+		}
+		if err := sink(r); err != nil {
+			stop = errors.Join(stop, fmt.Errorf("recording a result failed: %w", err))
 			cancel()
 		}
 	}
 	if stop != nil {
-		return sum, stop
+		return sum, errors.Join(stop, parent.Err())
 	}
 	return sum, parent.Err() // nil unless the caller cancelled or timed out
 }
@@ -109,6 +112,9 @@ func evaluate(ctx context.Context, s Stage, m Message, body func(context.Context
 		if err := body(ctx, &m); err != nil {
 			return contentFailure(s, m, fmt.Errorf("fetch body: %w", err))
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{Message: m, Err: err}
 	}
 	v, err := s.Evaluate(ctx, m)
 	if err != nil {
