@@ -328,7 +328,11 @@ func Load(path string) (Config, error) {
 	return c, c.normalize()
 }
 
-// Save writes c to path with mode 0600, creating its directory with mode 0700.
+// Save writes c atomically with mode 0600, creating its directory with mode 0700.
+// Nonready credential state also synchronizes the parent directory: callers
+// must finish that persistence barrier before changing the Keychain. Ready
+// publication keeps rename as its last fallible operation; a crash that loses
+// that rename exposes the prior nonready state and requires explicit sign-in.
 func Save(path string, c Config) error {
 	if err := c.normalize(); err != nil {
 		return err
@@ -350,8 +354,22 @@ func Save(path string, c Config) error {
 		_ = f.Close()
 		return err
 	}
+	if err = f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
 	if err = f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err = os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if c.Credential != nil && !c.Credential.Ready {
+		dir, err := os.Open(filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		return errors.Join(dir.Sync(), dir.Close())
+	}
+	return nil
 }

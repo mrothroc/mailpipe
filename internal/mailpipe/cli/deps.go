@@ -60,12 +60,14 @@ type Deps struct {
 	Credentials     func() (imapauth.Store, error)
 	CredentialInput func(context.Context, io.Reader, io.Writer, bool) ([]byte, error)
 	NewIMAP         func(imapmail.Config, imapmail.CredentialFunc) (*imapmail.Client, error)
-	SaveConfig      func(string, config.Config) error
-	Auth            func() (Authenticator, error)
-	Store           func(path string) (*store.Store, error)
-	AccountStore    func(context.Context, string, mailbox.Account) (*store.AccountStore, error)
-	Provider        func(context.Context) (mailbox.Provider, error)
-	Graph           func(auth Authenticator) Graph
+	// SaveConfig follows config.Save's acknowledgement contract: failure may
+	// publish nonready state, while ready publication is the final operation.
+	SaveConfig   func(string, config.Config) error
+	Auth         func() (Authenticator, error)
+	Store        func(path string) (*store.Store, error)
+	AccountStore func(context.Context, string, mailbox.Account) (*store.AccountStore, error)
+	Provider     func(context.Context) (mailbox.Provider, error)
+	Graph        func(auth Authenticator) Graph
 	// Secret reads a Keychain item (keychain.ErrNotFound when absent).
 	Secret func(ctx context.Context, service, account string) (string, error)
 	// Render turns an offline HTML page into a PDF.

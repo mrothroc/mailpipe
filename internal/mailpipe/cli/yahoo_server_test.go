@@ -42,6 +42,8 @@ type scriptServer struct {
 	fetchReply      string
 	authFail        bool
 	stallSource     bool
+	sourcePause     chan struct{}
+	sourceReady     chan struct{}
 
 	mu          sync.Mutex
 	listener    net.Listener
@@ -162,6 +164,7 @@ func (s *scriptServer) serve(c net.Conn) {
 		churn := s.churn
 		stall := s.stall
 		reply, authFail, stallSource := s.fetchReply, s.authFail, s.stallSource
+		pause, ready := s.sourcePause, s.sourceReady
 		if strings.Contains(line, "BODY.PEEK[]") && s.sourceReply != "" {
 			reply = s.sourceReply
 		}
@@ -257,6 +260,13 @@ func (s *scriptServer) serve(c net.Conn) {
 				hi, _ = strconv.ParseUint(rangePart[1], 10, 32)
 			}
 			source := strings.Contains(line, "BODY.PEEK[]")
+			if source && pause != nil {
+				select {
+				case ready <- struct{}{}:
+				default:
+				}
+				<-pause
+			}
 			for index, m := range messages {
 				if uint64(m.uid) < lo || uint64(m.uid) > hi {
 					continue

@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"maps"
+	"path/filepath"
 	"time"
 
 	"github.com/mrothroc/agentio"
@@ -21,6 +23,55 @@ func saveConfig(deps Deps, c config.Config) error {
 		return deps.SaveConfig(config.DefaultPath(), c)
 	}
 	return config.Save(config.DefaultPath(), c)
+}
+
+// configSession shares the existing current-user credential/config session in
+// production. Legacy Graph dependency fixtures need only its local flock, not a
+// credential backend; Exclusive never invokes the security runner here.
+func configSession(ctx context.Context, deps Deps, fn func() error) error {
+	if deps.Credentials != nil {
+		return setupSession(ctx, deps, func(imapauth.Items) error { return fn() })
+	}
+	lock := filepath.Join(filepath.Dir(config.DefaultPath()), "imap-keychain-v1.lock")
+	return keychain.New(imapauth.Service, nil).WithLock(lock).Exclusive(ctx, func(*keychain.Keychain) error { return fn() })
+}
+
+// saveRoutingConfig owns only account/collection routing. Remote discovery and
+// binding finish before entering the session; authorization and private state
+// are always taken from the validated current configuration, never a snapshot.
+func saveRoutingConfig(ctx context.Context, deps Deps, selected config.Config, account mailbox.Account, collections map[string]string) (out config.Config, err error) {
+	err = configSession(ctx, deps, func() error {
+		fresh, e := routing()
+		if e != nil {
+			return e
+		}
+		expected := selected
+		if expected.AccountID == "" && fresh.AccountID == string(account.ID) {
+			expected.AccountID = fresh.AccountID
+		}
+		if e = samePrincipal(fresh, expected); e != nil {
+			return e
+		}
+		if account.ProviderID != mailbox.ProviderID(fresh.Mode()) || (fresh.AccountID != "" && fresh.AccountID != string(account.ID)) {
+			return &mailbox.AccountMismatchError{Operation: "save routing", Expected: account.ID, Actual: fresh.Account().ID}
+		}
+		if fresh.Mode() == "yahoo" && !maps.Equal(fresh.IMAP.RoleMappings, selected.IMAP.RoleMappings) {
+			return errors.New("IMAP role mappings changed; rerun discovery")
+		}
+		fresh.AccountID = string(account.ID)
+		if fresh.Collections == nil {
+			fresh.Collections = map[string]string{}
+		}
+		for name, id := range collections {
+			fresh.Collections[name] = id
+		}
+		if e = saveConfig(deps, fresh); e != nil {
+			return e
+		}
+		out = fresh
+		return nil
+	})
+	return
 }
 func setupSession(ctx context.Context, deps Deps, fn func(imapauth.Items) error) error {
 	if deps.Credentials == nil {
@@ -88,7 +139,7 @@ func newYahooClient(deps Deps, c config.Config, f imapmail.CredentialFunc) (*ima
 	return client, nil
 }
 func samePrincipal(c, expected config.Config) error {
-	if c.Mode() != expected.Mode() || c.Account() != expected.Account() {
+	if c.Mode() != expected.Mode() || c.Account() != expected.Account() || (c.Mode() == "graph" && (c.ClientID != expected.ClientID || c.TenantID != expected.TenantID)) {
 		return &mailbox.AccountMismatchError{Operation: "setup", Expected: expected.Account().ID, Actual: c.Account().ID}
 	}
 	return nil

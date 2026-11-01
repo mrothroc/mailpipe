@@ -89,14 +89,18 @@ The bounded envelope fits one existing Keychain item; worst-case actual
 `security -i` stdin is below 4000 bytes including the lossless account name and
 hex value. Passwords travel only on stdin, never argv. Existing chunked MSAL
 storage is unchanged. One current-user credential lock serializes config/Keychain
-handshakes across configurations; it does not serialize mailbox runtime or replace
+handshakes and all configuration writers across configurations; it does not serialize mailbox runtime or replace
 SQLite lifecycle locks. Changing HOME under the same UID is not another OS user.
 
 Login checks database binding before input or remote reads, authenticates a
 candidate using the real verified-TLS client, and closes the probe before
 persistence. It durably saves nonsecret `ready:false` with a fresh generation,
 writes the item, reads back exact tuple/generation/password, then saves
-`ready:true`. Failed, partial or uncertain writes and final config failure cannot
+`ready:true`. The temporary config file is synced before rename; nonready state
+also syncs its parent directory before any Keychain write. Ready publication keeps
+rename as the last fallible step. A crash that loses that final rename exposes
+nonready state and requires explicit sign-in, rather than adopting a secret.
+Failed, partial or uncertain writes and final config failure cannot
 acknowledge successful sign-in. Status requires matching ready generation and
 envelope; stored credentials are not current remote authentication proof. Logout
 first disables readiness, then deletes and verifies only that tuple's item.
@@ -138,7 +142,17 @@ ADR 0005.
 
 References: [DNS ASCII case rules](https://www.rfc-editor.org/rfc/rfc4343.html),
 [Go TLS](https://pkg.go.dev/crypto/tls#Config),
+[file synchronization](https://pkg.go.dev/os#File.Sync),
 [IP parsing](https://pkg.go.dev/net/netip#ParseAddr),
 [IMAP LOGIN](https://www.rfc-editor.org/rfc/rfc9051.html#section-6.2.3),
 [Apple security manual source](https://raw.githubusercontent.com/apple-oss-distributions/Security/main/SecurityTool/macOS/security.1),
 and [the pinned terminal syscall helpers](https://pkg.go.dev/golang.org/x/sys/unix).
+
+Configuration routing and account-binding commands complete remote discovery outside
+the credential/configuration session. Inside the session they reload and validate
+the current provider, account and configured principal, then merge only their
+account/collection routing changes. They preserve current processing authorization,
+credential generation and unknown private fields. A changed principal or role
+mapping requires a fresh command. Configuration initialization rechecks existence
+inside the same session; processing updates merge into the fresh exact-account
+configuration there. A stale snapshot can never restore legacy processing consent.

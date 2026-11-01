@@ -7,7 +7,6 @@ import (
 
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
-	"github.com/mrothroc/mailpipe/pkg/imapauth"
 	"github.com/mrothroc/mailpipe/pkg/imapmail"
 	"github.com/spf13/cobra"
 )
@@ -29,13 +28,11 @@ func syncYahoo(cmd *cobra.Command, agent *agentio.AgentIO, deps Deps, c config.C
 		return e
 	}
 	aliases := map[string]imapmail.Role{"inbox": imapmail.Inbox, "sentitems": imapmail.Sent, "deleteditems": imapmail.Trash, "junkemail": imapmail.Junk}
-	if c.Collections == nil {
-		c.Collections = map[string]string{}
-	}
+	routes := map[string]string{}
 	selected := map[string]imapmail.Folder{}
 	for _, f := range d.Folders {
 		selected[f.Name] = f
-		c.Collections[f.Name] = string(f.Collection.Ref.CollectionID)
+		routes[f.Name] = string(f.Collection.Ref.CollectionID)
 	}
 	for _, f := range d.Folders {
 		for alias, role := range aliases {
@@ -44,22 +41,11 @@ func syncYahoo(cmd *cobra.Command, agent *agentio.AgentIO, deps Deps, c config.C
 					return errors.New("IMAP selectable path conflicts with a role alias; reconcile explicit folder routing")
 				}
 				selected[alias] = f
-				c.Collections[alias] = string(f.Collection.Ref.CollectionID)
+				routes[alias] = string(f.Collection.Ref.CollectionID)
 			}
 		}
 	}
-	// Serialize routing with auth/consent updates, preserving their fresh values.
-	if e = setupSession(ctx, deps, func(_ imapauth.Items) error {
-		fresh, e := routing()
-		if e != nil {
-			return e
-		}
-		if e = samePrincipal(fresh, c); e != nil {
-			return e
-		}
-		fresh.Collections = c.Collections
-		return saveConfig(deps, fresh)
-	}); e != nil {
+	if _, e = saveRoutingConfig(ctx, deps, c, client.Account(), routes); e != nil {
 		return fmt.Errorf("database bound but routing save failed; retry the same principal sync: %w", e)
 	}
 	if !cmd.Flags().Changed("folder") {

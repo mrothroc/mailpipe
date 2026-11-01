@@ -107,6 +107,7 @@ type yahooEnv struct {
 	server                         *scriptServer
 	inputErr                       error
 	input                          []byte
+	stdin                          io.Reader
 	inputs, models, clients, opens int
 }
 
@@ -162,6 +163,9 @@ func (e *yahooEnv) runContext(ctx context.Context, args ...string) (int, string,
 	e.t.Setenv("MAILPIPE_STAGES", filepath.Join(e.dir, "stages.json"))
 	e.t.Setenv("MAILPIPE_TEMPLATES", filepath.Join(e.dir, "templates.json"))
 	r := cli.NewRootCommand(e.deps)
+	if e.stdin != nil {
+		r.SetIn(e.stdin)
+	}
 	var out, err bytes.Buffer
 	r.SetOut(&out)
 	r.SetErr(&err)
@@ -171,6 +175,98 @@ func (e *yahooEnv) runContext(ctx context.Context, args ...string) (int, string,
 		e.t.Fatal("credential leaked")
 	}
 	return cli.ExitCode(failure), out.String(), err.String()
+}
+
+func TestYahooCLIStdinCredentialFailures(t *testing.T) {
+	for _, scenario := range []string{"eof-line", "lf", "crlf", "empty", "extra-line", "control", "oversize", "no-opt-in"} {
+		t.Run(scenario, func(t *testing.T) {
+			e := newYahooEnv(t)
+			e.deps.CredentialInput = nil
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			e.stdin = r
+			input := "credential-canary"
+			switch scenario {
+			case "lf":
+				input += "\n"
+			case "crlf":
+				input += "\r\n"
+			case "empty":
+				input = ""
+			case "extra-line":
+				input += "\nsecond\n"
+			case "control":
+				input += "\x00"
+			case "oversize":
+				input = strings.Repeat("x", 257)
+			}
+			if _, err = w.WriteString(input); err != nil {
+				t.Fatal("pipe fixture write failed")
+			}
+			w.Close()
+			args := []string{"auth", "login"}
+			if scenario != "no-opt-in" {
+				args = append(args, "--password-stdin")
+			}
+			code, _, _ := e.run(args...)
+			valid := scenario == "eof-line" || scenario == "lf" || scenario == "crlf"
+			if (code == 0) != valid {
+				t.Fatal("CLI stdin result violated the single-line/EOF contract")
+			}
+			status, _, _ := e.run("auth", "status")
+			if (status == 0) != valid {
+				t.Fatal("CLI stdin persistence status was incorrect")
+			}
+			if !valid && e.runner.writes != 0 {
+				t.Fatal("invalid CLI stdin wrote credentials")
+			}
+			if _, err = r.Stat(); err != nil {
+				t.Fatal("CLI closed borrowed stdin")
+			}
+		})
+	}
+}
+
+func TestYahooPrivateFieldsSurviveSetupLifecycle(t *testing.T) {
+	e := newYahooEnv(t)
+	c, err := config.Load(config.DefaultPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Extra = map[string]json.RawMessage{"private_top": json.RawMessage(`{"opaque":[1,2]}`)}
+	c.IMAP.Extra = map[string]json.RawMessage{"private_imap": json.RawMessage(`{"opaque":3}`)}
+	c.Processing.Extra = map[string]json.RawMessage{"private_processing": json.RawMessage(`{"opaque":4}`)}
+	c.Credential = &config.CredentialState{Version: 1, Extra: map[string]json.RawMessage{"private_credential": json.RawMessage(`{"opaque":5}`)}}
+	if err = config.Save(config.DefaultPath(), c); err != nil {
+		t.Fatal(err)
+	}
+	check := func() {
+		t.Helper()
+		fresh, err := config.Load(config.DefaultPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, pair := range [][2]map[string]json.RawMessage{{c.Extra, fresh.Extra}, {c.IMAP.Extra, fresh.IMAP.Extra}, {c.Processing.Extra, fresh.Processing.Extra}, {c.Credential.Extra, fresh.Credential.Extra}} {
+			a, _ := json.Marshal(pair[0])
+			b, _ := json.Marshal(pair[1])
+			if !bytes.Equal(a, b) {
+				t.Fatal("private JSON changed during setup lifecycle")
+			}
+		}
+	}
+	e.ok("config", "init", "--provider", "yahoo", "--endpoint", c.IMAP.Endpoint, "--login", c.IMAP.Login)
+	check()
+	e.ok("auth", "login")
+	check()
+	e.ok("sync", "--folder", "inbox")
+	check()
+	e.ok("config", "processing", "--account", c.AccountID, "--models=false", "--external-stages=false")
+	check()
+	e.ok("auth", "logout")
+	check()
 }
 func (e *yahooEnv) ok(args ...string) string {
 	e.t.Helper()
@@ -374,6 +470,56 @@ func TestYahooLazyCleanupAndOfflineReads(t *testing.T) {
 	}
 	if e.clients != clients || e.inputs != inputs || e.runner.calls != calls {
 		t.Fatal("help initialized credentials/client")
+	}
+}
+
+func TestYahooClientCloseFailureIsSurfaced(t *testing.T) {
+	e := newYahooEnv(t)
+	e.ok("auth", "login")
+	e.ok("sync", "--folder", "inbox")
+	spools := t.TempDir()
+	t.Setenv("TMPDIR", spools)
+	pause := make(chan struct{})
+	ready := make(chan struct{}, 1)
+	var once sync.Once
+	release := func() { once.Do(func() { close(pause) }) }
+	defer release()
+	e.server.mu.Lock()
+	e.server.sourcePause = pause
+	e.server.sourceReady = ready
+	e.server.mu.Unlock()
+	type result struct {
+		code   int
+		stderr string
+	}
+	done := make(chan result, 1)
+	go func() { code, _, stderr := e.run("show", "1"); done <- result{code, stderr} }()
+	select {
+	case <-ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("source fixture was not reached")
+	}
+	entries, err := os.ReadDir(spools)
+	if err != nil || len(entries) != 1 {
+		t.Fatal("owned fallback scope not found")
+	}
+	// An unowned test file makes directory removal fail. Scope must neither
+	// sweep that file nor turn the failed Client.Close into command success.
+	unowned := filepath.Join(spools, entries[0].Name(), "unowned-test-file")
+	if err = os.WriteFile(unowned, []byte("invented"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	select {
+	case r := <-done:
+		if r.code == 0 || strings.Contains(r.stderr, "exit=0") {
+			t.Fatal("client cleanup failure reported success")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client cleanup did not join")
+	}
+	if _, err = os.Stat(unowned); err != nil {
+		t.Fatal("cleanup removed an unowned file")
 	}
 }
 
@@ -622,6 +768,33 @@ func TestYahooFinalReadySaveFailure(t *testing.T) {
 	}
 	if c, _, _ := e.run("auth", "status"); c == 0 {
 		t.Fatal("failed ready commit reported stored")
+	}
+	e.deps.SaveConfig = nil
+	e.ok("auth", "login")
+	e.ok("auth", "status")
+}
+
+func TestYahooPendingDurabilityFailureStopsCredentialWrite(t *testing.T) {
+	e := newYahooEnv(t)
+	e.deps.SaveConfig = func(path string, c config.Config) error {
+		if c.Credential != nil && !c.Credential.Ready {
+			// Write/rename remains possible, but opening the directory for its
+			// persistence barrier fails. No new secret may be written afterward.
+			if err := os.Chmod(e.dir, 0300); err != nil {
+				return err
+			}
+			defer os.Chmod(e.dir, 0700)
+		}
+		return config.Save(path, c)
+	}
+	if code, _, _ := e.run("auth", "login"); code == 0 {
+		t.Fatal("pending directory synchronization failure was ignored")
+	}
+	if e.runner.writes != 0 {
+		t.Fatal("credential write preceded durable pending state")
+	}
+	if code, _, _ := e.run("auth", "status"); code == 0 {
+		t.Fatal("failed pending durability reported stored")
 	}
 	e.deps.SaveConfig = nil
 	e.ok("auth", "login")

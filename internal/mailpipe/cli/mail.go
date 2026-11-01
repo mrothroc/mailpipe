@@ -76,10 +76,6 @@ func newSyncCommand(deps Deps) *cobra.Command {
 				return agentio.NewStaleError(err.Error(), "mailpipe account bind")
 			}
 			defer bound.Close()
-			cfg.AccountID = string(g.Account().ID)
-			if cfg.Collections == nil {
-				cfg.Collections = map[string]string{}
-			}
 			var results []mailsync.Result
 			var mismatch []string
 			for _, f := range folders {
@@ -88,9 +84,10 @@ func newSyncCommand(deps Deps) *cobra.Command {
 					return err
 				}
 				collection.Name = f
-				cfg.Collections[f] = string(collection.Ref.CollectionID)
-				if err := config.Save(config.DefaultPath(), cfg); err != nil {
-					return fmt.Errorf("database bound but routing save failed; retry account bind: %w", err)
+				var saveErr error
+				cfg, saveErr = saveRoutingConfig(ctx, deps, cfg, g.Account(), map[string]string{f: string(collection.Ref.CollectionID)})
+				if saveErr != nil {
+					return fmt.Errorf("database bound but routing save failed; retry account bind: %w", saveErr)
 				}
 				r, err := mailsync.SyncCollection(ctx, bound, graphSyncSource{source}, collection, full)
 				if err != nil {

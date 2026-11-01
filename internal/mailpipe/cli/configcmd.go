@@ -17,21 +17,13 @@ func newConfigCommand(deps Deps) *cobra.Command {
 		endpoint, _ := cmd.Flags().GetString("endpoint")
 		login, _ := cmd.Flags().GetString("login")
 		path := config.DefaultPath()
-		_, statErr := os.Stat(path)
-		exists := statErr == nil
-		if statErr != nil && !os.IsNotExist(statErr) {
-			return statErr
-		}
-		var existing config.Config
-		if exists {
-			var e error
-			existing, e = config.Load(path)
-			if e != nil {
-				return e
-			}
-		}
 		write := func() error {
-			c := existing
+			_, statErr := os.Stat(path)
+			exists := statErr == nil
+			if statErr != nil && !os.IsNotExist(statErr) {
+				return statErr
+			}
+			var c config.Config
 			if exists {
 				var e error
 				c, e = config.Load(path)
@@ -93,12 +85,7 @@ func newConfigCommand(deps Deps) *cobra.Command {
 			}
 			return nil
 		}
-		var e error
-		if provider == "yahoo" {
-			e = setupSession(cmd.Context(), deps, func(imapauth.Items) error { return write() })
-		} else {
-			e = write()
-		}
+		e := configSession(cmd.Context(), deps, write)
 		if e != nil {
 			return e
 		}
@@ -165,11 +152,7 @@ func newConfigCommand(deps Deps) *cobra.Command {
 			}
 			return saveConfig(deps, fresh)
 		}
-		if c.Mode() == "yahoo" {
-			e = setupSession(cmd.Context(), deps, func(imapauth.Items) error { return write() })
-		} else {
-			e = write()
-		}
+		e = configSession(cmd.Context(), deps, write)
 		if e != nil {
 			return e
 		}
