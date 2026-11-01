@@ -21,6 +21,16 @@ Stages are defined in the private `~/mail/stages.json`; `examples/stages.example
 - **hook:** a private classifier executable with optional MIME access, exact sender scoping and a shared cost allowance. See [hooks.md](hooks.md).
 - **template:** recognises a record's kind and where to file it. See [filing.md](filing.md).
 
+## Account-scoped transfer consent
+
+Fresh setup disables model and external subprocess transfers. `jev` and
+`template` require model consent; `exec` and `hook` require separate external-stage
+consent, including metadata-only subprocesses. Use `config processing --help` and
+authorize only the exact bound account. Deterministic stages, local fingerprints,
+content inspection and plan review remain available. Existing Graph configurations
+without a processing record retain their explicitly configured legacy behavior;
+Yahoo and fresh Graph setup default off. See [operations](operations.md).
+
 ## Running stages
 
 - `mailpipe run <stage>` judges only messages that stage hasn't judged yet; `--rerun` judges again.

@@ -16,6 +16,17 @@ import (
 
 const account mailbox.AccountID = "account-a"
 
+type accountOnly struct{}
+
+func (accountOnly) Account() mailbox.Account {
+	return mailbox.Account{ID: account, ProviderID: "synthetic"}
+}
+func TestCapabilitiesDoNotRequirePageSync(t *testing.T) {
+	if got := mailbox.CapabilitiesOf(accountOnly{}); got != (mailbox.Capabilities{}) {
+		t.Fatal("read subset fabricated capabilities")
+	}
+}
+
 func state() mailbox.State {
 	return mailbox.State{
 		Ref:         mailbox.MessageRef{AccountID: account, MessageID: "occurrence-a", Locator: "route-a"},

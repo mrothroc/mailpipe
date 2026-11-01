@@ -12,12 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/store"
 	"github.com/mrothroc/mailpipe/pkg/template"
+	"github.com/spf13/cobra"
 )
 
 const defaultTemplateStage = "template"
@@ -55,7 +54,7 @@ type draftRow struct {
 func newFileDraftCommand(deps Deps) *cobra.Command {
 	cmd := newAgentCommand("draft --out <manifest.tsv> [--stage <name>]",
 		"Write a save manifest for template matches that are filed but not yet saved, marking each filing:pending", cobra.NoArgs,
-		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) (commandErr error) {
 			ctx := cmd.Context()
 			out, _ := cmd.Flags().GetString("out")
 			stageName, _ := cmd.Flags().GetString("stage")
@@ -85,7 +84,7 @@ func newFileDraftCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer s.Close()
+			defer func() { commandErr = errors.Join(commandErr, s.Close()) }()
 			filter := store.Filter{Labelled: stageName + ":" + template.Filed}
 			msgs, err := s.Messages(ctx, filter)
 			if err != nil {
@@ -95,7 +94,8 @@ func newFileDraftCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			graphFn := lazyProvider(ctx, deps)
+			graphFn, closeProvider := lazyProvider(ctx, deps)
+			defer func() { commandErr = errors.Join(commandErr, closeProvider()) }()
 			var rows []draftRow
 			seen := map[string]int64{}
 			saved, stale := 0, 0

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mrothroc/mailpipe/pkg/keychain"
 )
@@ -15,6 +17,41 @@ import (
 type call struct {
 	stdin string
 	args  []string
+}
+
+func TestExclusiveCredentialSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "keychain.lock")
+	a := keychain.New("fixture", &fakeRunner{}).WithLock(path)
+	b := keychain.New("fixture", &fakeRunner{}).WithLock(path)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- a.Exclusive(context.Background(), func(k *keychain.Keychain) error {
+			if e := k.Set(context.Background(), "item", "invented"); e != nil {
+				return e
+			}
+			if _, e := k.Get(context.Background(), "item"); e != nil {
+				return e
+			}
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if e := b.Exclusive(ctx, func(*keychain.Keychain) error { t.Error("overlapping exclusive session"); return nil }); !errors.Is(e, context.DeadlineExceeded) {
+		t.Fatal("session contention ignored cancellation")
+	}
+	close(release)
+	if e := <-done; e != nil {
+		t.Fatal(e)
+	}
+	if e := b.Exclusive(context.Background(), func(*keychain.Keychain) error { return nil }); e != nil {
+		t.Fatal("session lock leaked")
+	}
 }
 
 type fakeRunner struct {

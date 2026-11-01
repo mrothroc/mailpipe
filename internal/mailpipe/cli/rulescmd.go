@@ -7,14 +7,13 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/rules"
 	"github.com/mrothroc/mailpipe/pkg/stage"
 	"github.com/mrothroc/mailpipe/pkg/store"
+	"github.com/spf13/cobra"
 )
 
 // assessSenders decides which senders the blocklist holds: those any applied
@@ -86,7 +85,10 @@ func assessSenders(ctx context.Context, s *commandStore, srv rules.ManagedServic
 
 // openRules opens the store and Graph; the caller closes the store.
 func openRules(cmd *cobra.Command, deps Deps) (*commandStore, mailbox.Provider, error) {
-	g, err := lazyProvider(cmd.Context(), deps)()
+	if e := pilotGuard(cmd, "native rule installation (scan-time policy remains available)"); e != nil {
+		return nil, nil, e
+	}
+	g, err := lazyGraphProvider(cmd.Context(), deps)()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -262,7 +264,10 @@ func newRulesCommand(deps Deps) *cobra.Command {
 
 	list := newAgentCommand("list", "List every Inbox rule on the server; kind is managed (the blocklist), retired (an old per-plan rule) or blank (yours)", cobra.NoArgs,
 		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
-			g, err := lazyProvider(cmd.Context(), deps)()
+			if e := pilotGuard(cmd, "native rule installation (scan-time policy remains available)"); e != nil {
+				return e
+			}
+			g, err := lazyGraphProvider(cmd.Context(), deps)()
 			if err != nil {
 				return err
 			}

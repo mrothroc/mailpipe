@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,11 +16,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/pkg/document"
 	"github.com/mrothroc/mailpipe/pkg/store"
+	"github.com/spf13/cobra"
 )
 
 // filingStage records what save has done to a message: "pending" once it is
@@ -229,6 +227,11 @@ func newSaveCommand(deps Deps) *cobra.Command {
 			manifestPath, _ := cmd.Flags().GetString("manifest")
 			root, _ := cmd.Flags().GetString("root")
 			execute, _ := cmd.Flags().GetBool("execute")
+			if execute {
+				if e := pilotGuard(cmd, "save execution"); e != nil {
+					return e
+				}
+			}
 			workers, _ := cmd.Flags().GetInt("workers")
 			if manifestPath == "" || workers < 1 {
 				return agentio.NewUsageError("--manifest is required and --workers must be at least 1", "mailpipe save --help")
@@ -244,12 +247,15 @@ func newSaveCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer s.Close()
+			defer func() { commandErr = errors.Join(commandErr, s.Close()) }()
 			rows, err := readManifest(ctx, s, manifestPath)
 			if err != nil {
 				return err
 			}
 			retry := fmt.Sprintf("mailpipe save --manifest %s --root %s --execute", manifestPath, root)
+			if s.cfg.Mode() == "yahoo" {
+				retry = "mailpipe plan list"
+			}
 			if !execute {
 				for _, r := range rows {
 					r.status, r.files = "would_save", []string{filepath.Join(r.folder, r.name)}
@@ -294,9 +300,11 @@ func newSaveCommand(deps Deps) *cobra.Command {
 			if err := s.AddVerdicts(ctx, pending); err != nil {
 				return err
 			}
-			var g mailbox.Provider
+			var g readMailbox
 			if len(todo) > 0 {
-				if g, err = lazyProvider(ctx, deps)(); err != nil {
+				getProvider, closeProvider := lazyProvider(ctx, deps)
+				defer func() { commandErr = errors.Join(commandErr, closeProvider()) }()
+				if g, err = getProvider(); err != nil {
 					return err
 				}
 			}
@@ -381,7 +389,7 @@ func alreadySaved(ctx context.Context, s *commandStore, root *os.Root, r *saveRo
 
 // saveOne saves one row's files and records the outcome on the row and, once
 // saved, as a filing:saved verdict.
-func saveOne(ctx context.Context, s *commandStore, g mailbox.Provider, renderFn func(context.Context, string) ([]byte, error), root *os.Root, r *saveRow) {
+func saveOne(ctx context.Context, s *commandStore, g readMailbox, renderFn func(context.Context, string) ([]byte, error), root *os.Root, r *saveRow) {
 	fail := func(err error) { r.status, r.detail = "failed", err.Error() }
 	ref, err := s.remoteRef(ctx, r.msg.N)
 	if err != nil {

@@ -59,7 +59,7 @@ type Capabilities struct{ Trash, Archive, NativeRules bool }
 // CapabilitiesOf uses the same method assertions as dispatch. Adapters expose
 // only supported method sets for their configured account/mode. Read-only
 // wrappers must not embed writable methods and try to disable them with a flag.
-func CapabilitiesOf(p Provider) Capabilities {
+func CapabilitiesOf(p interface{ Account() Account }) Capabilities {
 	_, trash := p.(TrashCapability)
 	_, archive := p.(ArchiveCapability)
 	_, rules := p.(NativeRuleCapability)

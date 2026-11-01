@@ -47,6 +47,25 @@ const (
 	manifestPrefix = "keychain-chunks/v1:"
 )
 
+// MaxUnchunkedBytes is the largest value stored in one stdin-safe item.
+const MaxUnchunkedBytes = chunkBytes
+
+// Exclusive reuses the configured process lock for a credential/config session.
+// The callback copy avoids recursively acquiring that lock in Get/Set/Delete.
+func (k *Keychain) Exclusive(ctx context.Context, fn func(*Keychain) error) error {
+	if k.lockPath == "" || fn == nil {
+		return errors.New("keychain: exclusive session requires a lock and callback")
+	}
+	unlock, err := k.lock(ctx, syscall.LOCK_EX)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	c := *k
+	c.lockPath = ""
+	return fn(&c)
+}
+
 // safeName limits service and account names to characters that need no
 // quoting inside the stdin command line.
 var safeName = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)

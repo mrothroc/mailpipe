@@ -3,22 +3,24 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/graph"
 	"github.com/mrothroc/mailpipe/pkg/graphmail"
+	"github.com/mrothroc/mailpipe/pkg/imapauth"
+	"github.com/mrothroc/mailpipe/pkg/imapmail"
 	"github.com/mrothroc/mailpipe/pkg/keychain"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/msauth"
 	"github.com/mrothroc/mailpipe/pkg/render"
 	"github.com/mrothroc/mailpipe/pkg/store"
+	"github.com/spf13/cobra"
 )
 
 // The Entra app registration (client and tenant IDs) comes from the user's
@@ -55,6 +57,12 @@ type Graph interface {
 // Deps builds the collaborators lazily, so `mailpipe --help` needs no
 // Keychain, network or database. Tests replace every field.
 type Deps struct {
+	Credentials     func() (imapauth.Store, error)
+	CredentialInput func(context.Context, io.Reader, io.Writer, bool) ([]byte, error)
+	NewIMAP         func(imapmail.Config, imapmail.CredentialFunc) (*imapmail.Client, error)
+	// SaveConfig follows config.Save's acknowledgement contract: failure may
+	// publish nonready state, while ready publication is the final operation.
+	SaveConfig   func(string, config.Config) error
 	Auth         func() (Authenticator, error)
 	Store        func(path string) (*store.Store, error)
 	AccountStore func(context.Context, string, mailbox.Account) (*store.AccountStore, error)
@@ -66,9 +74,19 @@ type Deps struct {
 	Render func(ctx context.Context, page string) ([]byte, error)
 }
 
-// DefaultDeps wires the real Keychain, MSAL, Graph and SQLite.
+// DefaultDeps wires lazy Keychain, MSAL, Graph, read-only IMAP and SQLite access.
 func DefaultDeps() Deps {
 	return Deps{
+		CredentialInput: readCredentialInput,
+		NewIMAP:         imapmail.New,
+		SaveConfig:      config.Save,
+		Credentials: func() (imapauth.Store, error) {
+			home, e := os.UserHomeDir()
+			if e != nil {
+				return nil, errors.New("cannot locate current user credential lock")
+			}
+			return imapauth.NewKeychain(keychain.New(imapauth.Service, nil).WithLock(filepath.Join(home, "mail", "imap-keychain-v1.lock"))), nil
+		},
 		Auth: func() (Authenticator, error) {
 			cfg, err := config.Load(config.DefaultPath())
 			if err != nil {
@@ -129,6 +147,9 @@ func classify(err error) error {
 	}
 	if errors.Is(err, config.ErrNotConfigured) {
 		return agentio.NewStaleError(err.Error(), config.InitHint)
+	}
+	if errors.Is(err, imapauth.ErrCredential) {
+		return agentio.NewStaleError(imapauth.ErrCredential.Error(), loginHint)
 	}
 	if errors.Is(err, msauth.ErrNotSignedIn) {
 		return agentio.NewStaleError(err.Error(), loginHint)

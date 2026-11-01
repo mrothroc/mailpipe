@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/mrothroc/agentio"
-	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/store"
 	"github.com/spf13/cobra"
@@ -50,14 +49,17 @@ func (v *legacyVerifier) VerifyLegacy(ctx context.Context, a mailbox.Account, pr
 
 func newAccountCommand(deps Deps) *cobra.Command {
 	bind := newAgentCommand("bind [--execute --confirm-history <digest>]", "Verify and explicitly attribute an unbound historical database to the authenticated mailbox", cobra.NoArgs, func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+		if e := pilotGuard(cmd, "historical attribution; select a separate empty database and sync"); e != nil {
+			return e
+		}
 		ctx := cmd.Context()
 		execute, _ := cmd.Flags().GetBool("execute")
 		confirmation, _ := cmd.Flags().GetString("confirm-history")
-		p, err := lazyProvider(ctx, deps)()
+		cfg, err := routing()
 		if err != nil {
 			return err
 		}
-		cfg, err := routing()
+		p, err := lazyGraphProvider(ctx, deps)()
 		if err != nil {
 			return err
 		}
@@ -78,18 +80,15 @@ func newAccountCommand(deps Deps) *cobra.Command {
 			if e = bound.Close(); e != nil {
 				return e
 			}
-			cfg.AccountID = string(p.Account().ID)
-			if cfg.Collections == nil {
-				cfg.Collections = map[string]string{}
-			}
+			collections := map[string]string{}
 			for _, name := range []string{"inbox", "deleteditems", "sentitems", "junkemail"} {
 				collection, e := resolveCollection(ctx, p, name)
 				if e != nil {
 					return e
 				}
-				cfg.Collections[name] = string(collection.Ref.CollectionID)
+				collections[name] = string(collection.Ref.CollectionID)
 			}
-			if e = config.Save(config.DefaultPath(), cfg); e != nil {
+			if cfg, e = saveRoutingConfig(ctx, deps, cfg, p.Account(), collections); e != nil {
 				return fmt.Errorf("database binding verified but routing save failed; retry account bind: %w", e)
 			}
 			return agentio.Tabled(agent, []string{"account", "provider", "status"}, []string{"bound"}, func(status string) []string { return []string{cfg.AccountID, "graph", status} }, func(status string) map[string]any {
@@ -119,21 +118,18 @@ func newAccountCommand(deps Deps) *cobra.Command {
 			if e = bound.Close(); e != nil {
 				return e
 			}
-			cfg.AccountID = string(p.Account().ID)
-			if cfg.Collections == nil {
-				cfg.Collections = map[string]string{}
-			}
+			collections := map[string]string{}
 			for _, name := range []string{"inbox", "deleteditems", "sentitems", "junkemail"} {
 				collection, e := resolveCollection(ctx, p, name)
 				if e != nil {
 					return fmt.Errorf("database bound but routing resolution failed; retry account bind --execute: %w", e)
 				}
-				cfg.Collections[name] = string(collection.Ref.CollectionID)
+				collections[name] = string(collection.Ref.CollectionID)
 			}
 			for name, ref := range verifier.folders {
-				cfg.Collections[name] = string(ref.CollectionID)
+				collections[name] = string(ref.CollectionID)
 			}
-			if e = config.Save(config.DefaultPath(), cfg); e != nil {
+			if cfg, e = saveRoutingConfig(ctx, deps, cfg, p.Account(), collections); e != nil {
 				return fmt.Errorf("database bound but routing save failed; retry account bind --execute: %w", e)
 			}
 			status = "bound"
@@ -162,5 +158,5 @@ func newAccountCommand(deps Deps) *cobra.Command {
 	})
 	bind.Flags().Bool("execute", false, "permanently bind verified history and save account routing")
 	bind.Flags().String("confirm-history", "", "exact reviewed inventory digest confirming attribution of all history")
-	return newGroup("account", "Verify and bind local account history", bind)
+	return newGroup("account", "Inspect account routing/capabilities or bind Graph history", bind, newAccountShowCommand(), newCapabilitiesCommand(deps))
 }

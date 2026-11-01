@@ -11,14 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/document"
-	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/store"
 	"github.com/mrothroc/mailpipe/pkg/template"
+	"github.com/spf13/cobra"
 )
 
 // loadTemplates reads the template file, giving a missing file its exit code
@@ -124,7 +122,7 @@ func newTemplatesCheckCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer s.Close()
+			defer func() { commandErr = errors.Join(commandErr, s.Close()) }()
 			expect := map[int64]string{}
 			if expectPath != "" {
 				rows, err := readManifest(ctx, s, expectPath)
@@ -139,7 +137,8 @@ func newTemplatesCheckCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			graphFn := lazyProvider(ctx, deps)
+			graphFn, closeProvider := lazyProvider(ctx, deps)
+			defer func() { commandErr = errors.Join(commandErr, closeProvider()) }()
 			var rows []checkRow
 			matched, same, differ := 0, 0, 0
 			for _, m := range msgs {
@@ -239,8 +238,10 @@ func newTemplatesAnchorsCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer s.Close()
-			texts, err := exampleBodies(ctx, s, lazyProvider(ctx, deps), store.Filter{Folder: folder, SenderLike: from}, from, subject)
+			defer func() { commandErr = errors.Join(commandErr, s.Close()) }()
+			graphFn, closeProvider := lazyProvider(ctx, deps)
+			defer func() { commandErr = errors.Join(commandErr, closeProvider()) }()
+			texts, err := exampleBodies(ctx, s, graphFn, store.Filter{Folder: folder, SenderLike: from}, from, subject)
 			if err != nil {
 				return err
 			}
@@ -264,7 +265,7 @@ func newTemplatesAnchorsCommand(deps Deps) *cobra.Command {
 
 // exampleBodies returns the bodies of the stored emails exactly from sender
 // whose subjects match.
-func exampleBodies(ctx context.Context, s *commandStore, graphFn func() (mailbox.Provider, error), f store.Filter, sender string, subject *regexp.Regexp) ([]string, error) {
+func exampleBodies(ctx context.Context, s *commandStore, graphFn func() (readMailbox, error), f store.Filter, sender string, subject *regexp.Regexp) ([]string, error) {
 	msgs, err := s.Messages(ctx, f)
 	if err != nil {
 		return nil, err
