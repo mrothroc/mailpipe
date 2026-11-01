@@ -50,10 +50,13 @@ func (v *legacyVerifier) VerifyLegacy(ctx context.Context, a mailbox.Account, pr
 
 func newAccountCommand(deps Deps) *cobra.Command {
 	bind := newAgentCommand("bind [--execute --confirm-history <digest>]", "Verify and explicitly attribute an unbound historical database to the authenticated mailbox", cobra.NoArgs, func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+		if e := pilotGuard(cmd, "historical attribution; select a separate empty database and sync"); e != nil {
+			return e
+		}
 		ctx := cmd.Context()
 		execute, _ := cmd.Flags().GetBool("execute")
 		confirmation, _ := cmd.Flags().GetString("confirm-history")
-		p, err := lazyProvider(ctx, deps)()
+		p, err := lazyGraphProvider(ctx, deps)()
 		if err != nil {
 			return err
 		}
@@ -162,5 +165,5 @@ func newAccountCommand(deps Deps) *cobra.Command {
 	})
 	bind.Flags().Bool("execute", false, "permanently bind verified history and save account routing")
 	bind.Flags().String("confirm-history", "", "exact reviewed inventory digest confirming attribution of all history")
-	return newGroup("account", "Verify and bind local account history", bind)
+	return newGroup("account", "Inspect account routing/capabilities or bind Graph history", bind, newAccountShowCommand(), newCapabilitiesCommand(deps))
 }

@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/graphmail"
+	"github.com/mrothroc/mailpipe/pkg/imapmail"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/msauth"
 	"github.com/mrothroc/mailpipe/pkg/store"
@@ -25,7 +27,7 @@ type pinnedAuth struct {
 func (a pinnedAuth) Token(ctx context.Context) (string, error) {
 	return a.identity.TokenFor(ctx, a.subject)
 }
-func lazyProvider(ctx context.Context, deps Deps) func() (mailbox.Provider, error) {
+func lazyGraphProvider(ctx context.Context, deps Deps) func() (mailbox.Provider, error) {
 	var once sync.Once
 	var p mailbox.Provider
 	var result error
@@ -91,7 +93,7 @@ func (s graphSyncSource) ReadPage(ctx context.Context, r mailbox.SyncRequest) (m
 	return page, records, nil
 }
 
-func resolveCollection(ctx context.Context, p mailbox.Provider, name string) (mailbox.Collection, error) {
+func resolveCollection(ctx context.Context, p readMailbox, name string) (mailbox.Collection, error) {
 	resolver, ok := p.(interface {
 		Resolve(context.Context, string) (mailbox.Collection, error)
 	})
@@ -99,4 +101,63 @@ func resolveCollection(ctx context.Context, p mailbox.Provider, name string) (ma
 		return mailbox.Collection{}, &mailbox.UnsupportedError{Operation: "collection alias resolution"}
 	}
 	return resolver.Resolve(ctx, name)
+}
+
+// readMailbox matches real content/read methods without inventing page sync.
+type readMailbox interface {
+	Account() mailbox.Account
+	Collections(context.Context) ([]mailbox.Collection, error)
+	Metadata(context.Context, mailbox.MessageRef) (mailbox.Metadata, error)
+	Text(context.Context, mailbox.MessageRef) (string, error)
+	WriteMIME(context.Context, mailbox.MessageRef, io.Writer) error
+	Inspect(context.Context, mailbox.MessageRef) (mailbox.State, error)
+}
+
+// lazyProvider owns only the IMAP client it constructs. Injected Graph providers
+// remain borrowed. A command shares this getter across its body/hook callbacks.
+func lazyProvider(ctx context.Context, deps Deps) (func() (readMailbox, error), func() error) {
+	var once sync.Once
+	var mu sync.Mutex
+	var closed bool
+	var p readMailbox
+	var owned *imapmail.Client
+	var result error
+	get := func() (readMailbox, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if closed {
+			return nil, errors.New("mailbox client closed")
+		}
+		once.Do(func() {
+			c, e := routing()
+			if e != nil {
+				result = e
+				return
+			}
+			if c.Mode() != "yahoo" {
+				p, result = lazyGraphProvider(ctx, deps)()
+				return
+			}
+			owned, result = newYahooClient(deps, c, func(ctx context.Context) (imapmail.Credentials, error) { return credentials(ctx, deps, c) })
+			if result == nil {
+				p = owned
+			}
+		})
+		return p, result
+	}
+	var closeOnce sync.Once
+	var closeErr error
+	close := func() error {
+		closeOnce.Do(func() {
+			mu.Lock()
+			closed = true
+			client := owned
+			mu.Unlock()
+			if client != nil {
+				closeErr = client.Close()
+			}
+		})
+		return closeErr
+	}
+	return get, close
 }

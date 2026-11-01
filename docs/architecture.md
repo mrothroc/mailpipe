@@ -24,11 +24,12 @@ The table is generated from each package's doc comment (`tools/docgen`). Keep th
 |---|---|
 | `cmd/mailpipe` | Command mailpipe is the mailpipe CLI entry point. |
 | `internal/mailpipe/cli` | Package cli implements the mailpipe command line. |
-| `internal/mailpipe/config` | Package config reads mailpipe's private per-user configuration: the Entra app registration it signs in through (~/mail/config.json) and the stages, policy and owner's addresses (~/mail/stages.json), plus verified account and collection routing. |
+| `internal/mailpipe/config` | Package config reads private provider configuration, configured principal and account/collection routing, external-processing consent, stages and policy. |
 | `pkg/apply` | Package apply carries out a stored plan against the mailbox. |
 | `pkg/document` | Package document reads an email's MIME source into the parts a filing step needs: its headers, text and HTML bodies, inline images and attachments, and an offline HTML page for rendering it (inline images embedded, remote resources removed, so rendering never fetches anything). |
 | `pkg/graph` | Package graph is a thin Microsoft Graph client: bearer auth, immutable message ids (stable across folder moves), text bodies, throttling retries and paging. |
 | `pkg/graphmail` | Package graphmail adapts Microsoft Graph mailbox data and reviewed operations to the provider-neutral mailbox contract. |
+| `pkg/imapauth` | Package imapauth defines versioned configured IMAP principals and isolated Keychain credential envelopes. |
 | `pkg/imapmail` | Package imapmail provides verified TLS, read-only IMAP discovery, bounded complete content reads and occurrence synchronization using scoped metadata evidence. |
 | `pkg/keychain` | Package keychain stores secrets in the macOS login Keychain through the security tool. |
 | `pkg/mailbox` | Package mailbox defines provider-neutral accounts, message identities, collection memberships and optional reviewed capabilities. |
@@ -85,3 +86,16 @@ review/keep evidence before model evaluation; cleanup errors remain surfaced.
 Cleanup preserves operation values with a cancellation-independent five-second
 context. See [bounded IMAP content](adr/0005-bounded-imap-content.md) for exact
 limits, ownership/accounting, cleanup and the actual content/sync composition seam.
+
+## Provider setup and the read-only pilot
+
+Absent provider retains Graph routing. Yahoo setup derives a versioned configured
+principal from canonical TLS endpoint and exact opaque login, then uses unchanged
+permanent account-bound storage. A narrow CLI read interface composes the real
+IMAP client; whole-pass synchronization calls its existing SyncCollection directly
+through the sole RunPass core. Credential readiness and explicit per-account model
+and subprocess consent are separate from account identity. Each command owns and
+closes one lazy IMAP client shared by its content callbacks. Yahoo mutations,
+native-rule installation and PDF save execution remain unavailable. See
+[ADR 0006](adr/0006-yahoo-read-only-setup.md) for exact grammar, compatibility,
+failure recovery and cleanup ownership.

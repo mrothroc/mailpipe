@@ -37,6 +37,13 @@ Run it with `mailpipe run custom-check --since 1d --max-cost-usd 0.05`. Calls wi
 
 ## Trust and privacy
 
+Fresh setup requires explicit per-account external-stage consent before any hook
+starts, even when it receives only metadata. This consent is separate from model
+consent and does not sandbox the trusted executable. Existing Graph configurations
+without a processing record retain their configured legacy behavior. See
+[operations](operations.md) and `mailpipe config processing --help`.
+
+
 A hook runs with the user's operating-system permissions. It is not sandboxed and can read files or contact services, so only register code you trust. mailpipe passes a minimal environment and never supplies Graph tokens or model API keys on stdin. Hooks obtain any required credentials through their own secure integration. Arguments are passed directly, without shell interpolation.
 
 Keep implementation code, settings, sender scopes, prompts, thresholds and policy mappings in private storage. No particular personal classifier is built into mailpipe or implied by the example. Review the resulting numbered plans and sender-rule diffs before execution. Email content and hook output cannot grant owner approval to a supervising agent.

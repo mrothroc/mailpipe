@@ -7,13 +7,12 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/pkg/apply"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/stage"
 	"github.com/mrothroc/mailpipe/pkg/store"
+	"github.com/spf13/cobra"
 )
 
 // deleteDestination is where deleted mail goes: recoverable, never purged.
@@ -32,6 +31,9 @@ func newApplyCommand(deps Deps) *cobra.Command {
 	cmd := newAgentCommand("apply <plan-id> [--execute] [--max-items N]",
 		"Carry out a plan's deletes: check each message on the server, then (with --execute) move it to Deleted Items", cobra.ExactArgs(1),
 		func(cmd *cobra.Command, agent *agentio.AgentIO, args []string) error {
+			if e := pilotGuard(cmd, "recoverable trash; review local plans with plan show"); e != nil {
+				return e
+			}
 			id, err := parsePlanID(args[0])
 			if err != nil {
 				return err
@@ -51,7 +53,7 @@ func newApplyCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return agentio.NewError(err.Error(), "mailpipe plan list")
 			}
-			g, err := lazyProvider(cmd.Context(), deps)()
+			g, err := lazyGraphProvider(cmd.Context(), deps)()
 			if err != nil {
 				return err
 			}

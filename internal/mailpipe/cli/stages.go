@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/mrothroc/mailpipe/pkg/document"
 	"io"
 	"net/http"
 	"sort"
@@ -12,16 +11,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
+	"github.com/mrothroc/mailpipe/pkg/document"
 	"github.com/mrothroc/mailpipe/pkg/graph"
 	"github.com/mrothroc/mailpipe/pkg/keychain"
 	"github.com/mrothroc/mailpipe/pkg/msauth"
 	"github.com/mrothroc/mailpipe/pkg/stage"
 	"github.com/mrothroc/mailpipe/pkg/store"
 	"github.com/mrothroc/mailpipe/pkg/template"
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -83,7 +82,10 @@ func openRouterItem(c config.Stages) (service, account string) {
 }
 
 // buildStage turns a definition into a runnable stage.
-func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageDef, s *commandStore, maxCost float64) (stage.Stage, error) {
+func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageDef, s *commandStore, maxCost float64, graphFn func() (readMailbox, error)) (stage.Stage, error) {
+	if e := authorizeProcessing(s, d.Type); e != nil {
+		return nil, e
+	}
 	switch d.Type {
 	case "allowlist":
 		contacts, err := s.SentRecipients(ctx)
@@ -99,7 +101,6 @@ func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageD
 	case "hook":
 		var source func(context.Context, stage.Message, io.Writer) error
 		if d.NeedsSource {
-			graphFn := lazyProvider(ctx, deps)
 			source = func(ctx context.Context, m stage.Message, w io.Writer) error {
 				g, err := graphFn()
 				if err != nil {
@@ -137,7 +138,7 @@ func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageD
 		}
 		return stage.NewSenderCache(d.Name, d.Source, d.Label, d.MinVerdicts, lookup), nil
 	case "jev":
-		client, err := jevClient(ctx, deps, c, d)
+		client, err := jevClient(ctx, deps, c, d, s)
 		if err != nil {
 			return nil, err
 		}
@@ -147,7 +148,7 @@ func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageD
 		if err != nil {
 			return nil, err
 		}
-		client, err := jevClient(ctx, deps, c, d)
+		client, err := jevClient(ctx, deps, c, d, s)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +159,10 @@ func buildStage(ctx context.Context, deps Deps, c config.Stages, d config.StageD
 
 // jevClient builds a Decisions API client for a stage, with the OpenRouter
 // key from the Keychain.
-func jevClient(ctx context.Context, deps Deps, c config.Stages, d config.StageDef) (*stage.JevClient, error) {
+func jevClient(ctx context.Context, deps Deps, c config.Stages, d config.StageDef, s *commandStore) (*stage.JevClient, error) {
+	if e := authorizeProcessing(s, "jev"); e != nil {
+		return nil, e
+	}
 	service, account := openRouterItem(c)
 	key, err := deps.Secret(ctx, service, account)
 	if errors.Is(err, keychain.ErrNotFound) || (err == nil && strings.TrimSpace(key) == "") {
@@ -282,8 +286,10 @@ func newRunCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer s.Close()
-			st, err := buildStage(ctx, deps, c, def, s, maxCost)
+			defer func() { commandErr = errors.Join(commandErr, s.Close()) }()
+			graphFn, closeProvider := lazyProvider(ctx, deps)
+			defer func() { commandErr = errors.Join(commandErr, closeProvider()) }()
+			st, err := buildStage(ctx, deps, c, def, s, maxCost, graphFn)
 			if err != nil {
 				return err
 			}
@@ -311,7 +317,6 @@ func newRunCommand(deps Deps) *cobra.Command {
 			for i, m := range pending {
 				msgs[i], stored[m.N], pos[m.N] = toStageMessage(m), m, i
 			}
-			graphFn := lazyProvider(ctx, deps)
 			body := func(ctx context.Context, m *stage.Message) error {
 				text, err := messageBody(ctx, s, stored[m.N], graphFn)
 				if err != nil {

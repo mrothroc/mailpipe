@@ -4,14 +4,20 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
+	"github.com/spf13/cobra"
 )
 
 func newAuthCommand(deps Deps) *cobra.Command {
-	login := newAgentCommand("login", "Sign in with a device code (the URL and code are printed on stderr)", cobra.NoArgs,
+	login := newAgentCommand("login", "Sign in: Graph device code or Yahoo app password on hidden stdin", cobra.NoArgs,
 		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+			c, err := routing()
+			if err != nil {
+				return err
+			}
+			if c.Mode() == "yahoo" {
+				return yahooLogin(cmd, agent, deps, c)
+			}
 			a, err := deps.Auth()
 			if err != nil {
 				return err
@@ -27,8 +33,16 @@ func newAuthCommand(deps Deps) *cobra.Command {
 				func(s string) []string { return []string{s} },
 				func(s string) map[string]any { return map[string]any{"account": s} })
 		})
-	status := newAgentCommand("status", "Show the signed-in account and the scopes it was granted", cobra.NoArgs,
+	login.Flags().Bool("password-stdin", false, "read one app-password line from stdin (never argv or environment)")
+	status := newAgentCommand("status", "Show Graph sign-in or Yahoo credential readiness (not a remote authentication proof)", cobra.NoArgs,
 		func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+			c, err := routing()
+			if err != nil {
+				return err
+			}
+			if c.Mode() == "yahoo" {
+				return yahooStatus(cmd.Context(), deps, c, agent)
+			}
 			a, err := deps.Auth()
 			if err != nil {
 				return err
@@ -43,11 +57,18 @@ func newAuthCommand(deps Deps) *cobra.Command {
 		})
 	logout := newAgentCommand("logout", "Forget the stored sign-in", cobra.NoArgs,
 		func(cmd *cobra.Command, _ *agentio.AgentIO, _ []string) error {
+			c, err := routing()
+			if err != nil {
+				return err
+			}
+			if c.Mode() == "yahoo" {
+				return yahooLogout(cmd.Context(), deps, c)
+			}
 			a, err := deps.Auth()
 			if err != nil {
 				return err
 			}
 			return a.Logout(cmd.Context())
 		})
-	return newGroup("auth", "Sign in to Microsoft 365 and check access", login, status, logout)
+	return newGroup("auth", "Sign in to the configured Graph or read-only Yahoo account", login, status, logout)
 }

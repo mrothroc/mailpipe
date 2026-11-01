@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/cobra"
-
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/document"
@@ -16,6 +14,7 @@ import (
 	"github.com/mrothroc/mailpipe/pkg/mailsync"
 	"github.com/mrothroc/mailpipe/pkg/stage"
 	"github.com/mrothroc/mailpipe/pkg/store"
+	"github.com/spf13/cobra"
 )
 
 func openStore(cmd *cobra.Command, deps Deps) (*commandStore, error) {
@@ -24,8 +23,11 @@ func openStore(cmd *cobra.Command, deps Deps) (*commandStore, error) {
 		return nil, err
 	}
 	if cfg.AccountID != "" {
-		bound, e := openBound(cmd.Context(), deps, dbPath(cmd), mailbox.Account{ID: mailbox.AccountID(cfg.AccountID), ProviderID: "graph"})
+		bound, e := openBound(cmd.Context(), deps, dbPath(cmd), cfg.Account())
 		if e != nil {
+			if cfg.Mode() == "yahoo" {
+				return nil, yahooBindingError(e)
+			}
 			return nil, agentio.NewError("open database: "+e.Error(), "mailpipe account bind")
 		}
 		return &commandStore{bound: bound, cfg: cfg}, nil
@@ -47,7 +49,14 @@ func newSyncCommand(deps Deps) *cobra.Command {
 				folders = mailsync.DefaultFolders
 			}
 			ctx := cmd.Context()
-			g, err := lazyProvider(ctx, deps)()
+			cfg, err := routing()
+			if err != nil {
+				return err
+			}
+			if cfg.Mode() == "yahoo" {
+				return syncYahoo(cmd, agent, deps, cfg, folders, full)
+			}
+			g, err := lazyGraphProvider(ctx, deps)()
 			if err != nil {
 				return err
 			}
@@ -55,7 +64,7 @@ func newSyncCommand(deps Deps) *cobra.Command {
 			if !ok || g.Account().ProviderID != "graph" {
 				return &mailbox.UnsupportedError{Operation: "Graph synchronization"}
 			}
-			cfg, err := routing()
+			cfg, err = routing()
 			if err != nil {
 				return err
 			}
@@ -161,7 +170,9 @@ func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 func newShowCommand(deps Deps) *cobra.Command {
 	cmd := newAgentCommand("show <n> [--no-quotes]", "Show one message: headers, then the text body (bounded by --limit lines)",
 		cobra.ExactArgs(1),
-		func(cmd *cobra.Command, agent *agentio.AgentIO, args []string) error {
+		func(cmd *cobra.Command, agent *agentio.AgentIO, args []string) (commandErr error) {
+			getProvider, closeProvider := lazyProvider(cmd.Context(), deps)
+			defer func() { commandErr = errors.Join(commandErr, closeProvider()) }()
 			n, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil || n < 1 {
 				return agentio.NewUsageError(fmt.Sprintf("message number must be a positive integer, got %q", args[0]), "mailpipe ls")
@@ -170,7 +181,7 @@ func newShowCommand(deps Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer s.Close()
+			defer func() { commandErr = errors.Join(commandErr, s.Close()) }()
 			m, ok, err := s.Get(cmd.Context(), n)
 			if err != nil {
 				return err
@@ -179,7 +190,7 @@ func newShowCommand(deps Deps) *cobra.Command {
 				return agentio.NewError(fmt.Sprintf("no message %d", n), "mailpipe ls")
 			}
 			if headers, _ := cmd.Flags().GetBool("headers"); headers {
-				g, err := lazyProvider(cmd.Context(), deps)()
+				g, err := getProvider()
 				if err != nil {
 					return err
 				}
@@ -202,7 +213,7 @@ func newShowCommand(deps Deps) *cobra.Command {
 				}
 				return agent.Text(block, agent.Limit())
 			}
-			body, err := messageBody(cmd.Context(), s, m, lazyProvider(cmd.Context(), deps))
+			body, err := messageBody(cmd.Context(), s, m, getProvider)
 			if err != nil {
 				return err
 			}
@@ -263,7 +274,7 @@ func headerBlock(raw []byte) string {
 }
 
 // messageBody preserves lazy cached reads and caches only complete text.
-func messageBody(ctx context.Context, s *commandStore, m store.Message, provider func() (mailbox.Provider, error)) (string, error) {
+func messageBody(ctx context.Context, s *commandStore, m store.Message, provider func() (readMailbox, error)) (string, error) {
 	if m.Body != nil {
 		return *m.Body, nil
 	}
