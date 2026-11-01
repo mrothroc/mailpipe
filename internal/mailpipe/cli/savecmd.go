@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -223,7 +224,7 @@ func outputs(ctx context.Context, doc document.Doc, name string, renderFn func(c
 func newSaveCommand(deps Deps) *cobra.Command {
 	cmd := newAgentCommand("save --manifest <file> [--root <dir>] [--execute]",
 		"Save messages as PDFs into a filing tree: PDF attachments as they are, otherwise the message rendered offline",
-		cobra.NoArgs, func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+		cobra.NoArgs, func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) (commandErr error) {
 			ctx := cmd.Context()
 			manifestPath, _ := cmd.Flags().GetString("manifest")
 			root, _ := cmd.Flags().GetString("root")
@@ -259,6 +260,12 @@ func newSaveCommand(deps Deps) *cobra.Command {
 				fmt.Fprintf(agent.Stderr(), "[hint] check only, nothing written: %d to save under %s. Try: %s\n", len(rows), root, retry)
 				return nil
 			}
+			scope, scopeErr := document.NewScope(document.Limits{})
+			if scopeErr != nil {
+				return scopeErr
+			}
+			defer func() { commandErr = errors.Join(commandErr, scope.CloseContext(ctx)) }()
+			ctx = document.WithScope(ctx, scope)
 			if err := os.MkdirAll(root, 0o700); err != nil {
 				return err
 			}
@@ -381,31 +388,101 @@ func saveOne(ctx context.Context, s *commandStore, g mailbox.Provider, renderFn 
 		r.status, r.detail = "failed", err.Error()
 		return
 	}
-	raw, err := document.ReadSource(ctx, g, ref)
-	if err != nil {
-		fail(fmt.Errorf("fetch: %w", err))
-		return
-	}
-	doc, err := document.Parse(raw)
-	if err != nil {
-		fail(err)
-		return
-	}
-	outs, err := outputs(ctx, doc, r.name, renderFn)
-	if err != nil {
-		fail(err)
-		return
-	}
-	wrote := false
-	for _, o := range outs {
-		rel := filepath.Join(r.folder, o.name)
-		created, err := writeNew(root, rel, o.data)
+
+	scope := document.ScopeFrom(ctx)
+	own := scope == nil
+	if own {
+		scope, err = document.NewScope(document.Limits{})
 		if err != nil {
 			fail(err)
 			return
 		}
-		wrote = wrote || created
-		r.files = append(r.files, rel)
+	}
+	source, err := document.OpenSource(ctx, g, ref, scope)
+	if err != nil {
+		if own {
+			err = errors.Join(err, scope.CloseContext(ctx))
+		}
+		fail(err)
+		return
+	}
+	rd, err := source.Open()
+	if err != nil {
+		err = errors.Join(err, source.Close())
+		if own {
+			err = errors.Join(err, scope.CloseContext(ctx))
+		}
+		fail(err)
+		return
+	}
+	doc, err := document.ParseReader(ctx, rd, scope)
+	err = errors.Join(err, rd.Close())
+	if err != nil {
+		if doc != nil {
+			err = errors.Join(err, doc.Close())
+		}
+		err = errors.Join(err, source.Close())
+		if own {
+			err = errors.Join(err, scope.CloseContext(ctx))
+		}
+		fail(err)
+		return
+	}
+	cleanup := func() error {
+		e := errors.Join(doc.Close(), source.Close())
+		if own {
+			e = errors.Join(e, scope.CloseContext(ctx))
+		}
+		return e
+	}
+	pdfs := doc.PDFs()
+	wrote := false
+	if len(pdfs) > 0 {
+		// Reuse the established attachment naming algorithm; no payload is copied.
+		naming := document.Doc{}
+		for _, p := range pdfs {
+			naming.Attachments = append(naming.Attachments, document.Part{Filename: p.Filename, ContentType: p.ContentType})
+		}
+		names, e := outputs(ctx, naming, r.name, renderFn)
+		if e != nil {
+			fail(errors.Join(e, cleanup()))
+			return
+		}
+		for i, p := range pdfs {
+			created, e := writeNewReader(ctx, root, filepath.Join(r.folder, names[i].name), p.Data.Open, scope.Limits().PDFBytes)
+			if e != nil {
+				fail(errors.Join(e, cleanup()))
+				return
+			}
+			wrote = wrote || created
+			r.files = append(r.files, filepath.Join(r.folder, names[i].name))
+		}
+	} else {
+		page, e := doc.OfflineHTML(ctx)
+		if e != nil {
+			fail(errors.Join(e, cleanup()))
+			return
+		}
+		pdf, e := renderFn(ctx, page)
+		if e != nil {
+			fail(errors.Join(e, cleanup()))
+			return
+		}
+		if int64(len(pdf)) > scope.Limits().PDFBytes {
+			fail(errors.Join(document.ErrIncomplete, cleanup()))
+			return
+		}
+		created, e := writeNewReader(ctx, root, filepath.Join(r.folder, r.name), func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(pdf)), nil }, scope.Limits().PDFBytes)
+		if e != nil {
+			fail(errors.Join(e, cleanup()))
+			return
+		}
+		wrote = created
+		r.files = append(r.files, filepath.Join(r.folder, r.name))
+	}
+	if err = cleanup(); err != nil {
+		fail(err)
+		return
 	}
 	r.status = "exists"
 	if wrote {
@@ -426,4 +503,203 @@ func saveTable(agent *agentio.AgentIO, rows []*saveRow) error {
 			return map[string]any{"n": r.msg.N, "sender": r.msg.Sender, "subject": r.msg.Subject, "status": r.status,
 				"files": r.files, "detail": r.detail}
 		})
+}
+
+// pdfDateReader preserves the existing PDF timestamp-insensitive comparison
+// without loading an existing attachment. Unbounded date tokens fail closed.
+type pdfDateReader struct{ r *bufio.Reader }
+
+func (p pdfDateReader) Read(out []byte) (int, error) {
+	n := 0
+	for n < len(out) {
+		prefix, _ := p.r.Peek(23)
+		skip := 0
+		for _, token := range []string{"/CreationDate (D:", "/ModDate (D:"} {
+			if bytes.HasPrefix(prefix, []byte(token)) {
+				skip = len(token)
+				break
+			}
+		}
+		if skip > 0 {
+			_, _ = p.r.Discard(skip)
+			for count := skip; ; count++ {
+				if count > 1024 {
+					return n, errors.New("PDF date comparison token exceeds limit")
+				}
+				b, e := p.r.ReadByte()
+				if e != nil {
+					return n, e
+				}
+				if b == ')' {
+					break
+				}
+			}
+			continue
+		}
+		b, e := p.r.ReadByte()
+		if e != nil {
+			return n, e
+		}
+		out[n] = b
+		n++
+	}
+	return n, nil
+}
+func equalReaders(a, b io.Reader) (bool, error) {
+	left, right := make([]byte, 32768), make([]byte, 32768)
+	for {
+		na, ea := io.ReadFull(a, left)
+		nb, eb := io.ReadFull(b, right)
+		if ea != nil && ea != io.EOF && ea != io.ErrUnexpectedEOF {
+			return false, ea
+		}
+		if eb != nil && eb != io.EOF && eb != io.ErrUnexpectedEOF {
+			return false, eb
+		}
+		if na != nb || !bytes.Equal(left[:na], right[:nb]) {
+			return false, nil
+		}
+		if ea != nil || eb != nil {
+			return ea == eb, nil
+		}
+	}
+}
+func writeNewReader(ctx context.Context, root *os.Root, path string, open func() (io.ReadCloser, error), maxBytes int64) (created bool, err error) {
+	if !filepath.IsLocal(path) {
+		return false, errors.New("file must stay inside filing root")
+	}
+	if err = root.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return false, err
+	}
+	dir, e := root.OpenRoot(filepath.Dir(path))
+	if e != nil {
+		return false, e
+	}
+	defer func() { err = errors.Join(err, dir.Close()) }()
+	name := filepath.Base(path)
+	if info, e := dir.Lstat(name); e == nil {
+		if !info.Mode().IsRegular() || info.Size() > maxBytes {
+			return false, errors.New("existing file is not a bounded regular output")
+		}
+		compare := func(normalize bool) (same bool, err error) {
+			old, e := dir.Open(name)
+			if e != nil {
+				return false, e
+			}
+			defer func() { err = errors.Join(err, old.Close()) }()
+			fresh, e := open()
+			if e != nil {
+				return false, e
+			}
+			defer func() { err = errors.Join(err, fresh.Close()) }()
+			if normalize {
+				a, b := bufio.NewReaderSize(contextFileReader{ctx, old}, 4096), bufio.NewReaderSize(contextFileReader{ctx, fresh}, 4096)
+				ha, _ := a.Peek(5)
+				hb, _ := b.Peek(5)
+				if string(ha) != "%PDF-" || string(hb) != "%PDF-" {
+					return false, nil
+				}
+				return equalReaders(pdfDateReader{a}, pdfDateReader{b})
+			}
+			return equalReaders(contextFileReader{ctx, old}, contextFileReader{ctx, fresh})
+		}
+		same, e := compare(false)
+		if e != nil {
+			return false, e
+		}
+		if !same {
+			same, e = compare(true)
+		}
+		if e != nil {
+			return false, e
+		}
+		if !same {
+			return false, fmt.Errorf("%s already exists with different content", path)
+		}
+		return false, nil
+	} else if !os.IsNotExist(e) {
+		return false, e
+	}
+	tempName := ".mailpipe-save-" + rand.Text()
+	f, e := dir.OpenFile(tempName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	if e != nil {
+		return false, e
+	}
+	defer func() { err = errors.Join(err, dir.Remove(tempName)) }()
+	input, e := open()
+	if e != nil {
+		return false, errors.Join(e, f.Close())
+	}
+	buffer := make([]byte, 32768)
+	var count int64
+	for {
+		if e = ctx.Err(); e != nil {
+			break
+		}
+		n, re := input.Read(buffer)
+		if int64(n) > maxBytes-count {
+			e = document.ErrIncomplete
+			break
+		}
+		if n > 0 {
+			var written int
+			written, e = f.Write(buffer[:n])
+			count += int64(written)
+			if e == nil && written != n {
+				e = io.ErrShortWrite
+			}
+			if e != nil {
+				break
+			}
+		}
+		if re != nil {
+			if re != io.EOF {
+				e = re
+			}
+			break
+		}
+	}
+	e = errors.Join(e, input.Close())
+	if e == nil {
+		e = f.Sync()
+	}
+	e = errors.Join(e, f.Close())
+	if e != nil {
+		return false, e
+	}
+	if e = dir.Link(tempName, name); e != nil {
+		return false, e
+	}
+	// Verify through the same pinned directory and bounded source reader.
+	old, e := dir.Open(name)
+	if e != nil {
+		return false, e
+	}
+	fresh, e := open()
+	if e != nil {
+		return false, errors.Join(e, old.Close())
+	}
+	same, e := equalReaders(contextFileReader{ctx, old}, contextFileReader{ctx, fresh})
+	e = errors.Join(e, old.Close(), fresh.Close())
+	if e != nil {
+		return false, e
+	}
+	if !same {
+		return false, errors.New("output readback differs")
+	}
+	return true, nil
+}
+
+// contextFileReader checks cancellation between finite comparison/readback reads.
+// A blocking local filesystem syscall still requires filesystem cooperation.
+type contextFileReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextFileReader) Read(b []byte) (int, error) {
+	if e := r.ctx.Err(); e != nil {
+		return 0, e
+	}
+	return r.r.Read(b)
 }

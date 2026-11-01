@@ -4,15 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mrothroc/mailpipe/pkg/document"
 	"sync"
 )
 
 // Result is the outcome for one message: a verdict, or the error that
-// prevented one. On error, Verdict carries only the cost of the failed attempt.
+// prevented one. On error, Verdict carries only cost, except Protected results
+// whose review/keep verdict must be persisted while the run error is surfaced.
 type Result struct {
-	Message Message
-	Verdict Verdict
-	Err     error
+	Message   Message
+	Verdict   Verdict
+	Err       error
+	Protected bool
 }
 
 // Summary counts a run's outcomes.
@@ -104,11 +107,16 @@ func evaluate(ctx context.Context, s Stage, m Message, body func(context.Context
 	}
 	if need && body != nil {
 		if err := body(ctx, &m); err != nil {
-			return Result{Message: m, Err: fmt.Errorf("fetch body: %w", err)}
+			return contentFailure(s, m, fmt.Errorf("fetch body: %w", err))
 		}
 	}
 	v, err := s.Evaluate(ctx, m)
 	if err != nil {
+		if errors.Is(err, document.ErrIncomplete) {
+			r := contentFailure(s, m, err)
+			r.Verdict.CostUSD = v.CostUSD
+			return r
+		}
 		return Result{Message: m, Verdict: Verdict{Stage: s.Name(), CostUSD: v.CostUSD}, Err: err}
 	}
 	if err := v.Validate(); err != nil {
@@ -116,4 +124,17 @@ func evaluate(ctx context.Context, s Stage, m Message, body func(context.Context
 	}
 	v.Stage = s.Name()
 	return Result{Message: m, Verdict: v}
+}
+
+// contentFailure preserves protection as a successful stored verdict while a
+// cleanup failure independently stops the run. Ordinary access failures stay fatal.
+func contentFailure(s Stage, m Message, err error) Result {
+	if !errors.Is(err, document.ErrIncomplete) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (errors.Is(err, ErrFatal) && !errors.Is(err, document.ErrCleanup)) {
+		return Result{Message: m, Err: err}
+	}
+	r := Result{Message: m, Protected: true, Verdict: Verdict{Stage: s.Name(), Labels: []string{"review"}, Action: Keep, Reason: "incomplete content; retained for review", Provenance: "content-safety"}}
+	if errors.Is(err, document.ErrCleanup) {
+		r.Err = errors.Join(ErrFatal, document.ErrCleanup)
+	}
+	return r
 }

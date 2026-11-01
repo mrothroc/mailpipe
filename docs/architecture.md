@@ -29,7 +29,7 @@ The table is generated from each package's doc comment (`tools/docgen`). Keep th
 | `pkg/document` | Package document reads an email's MIME source into the parts a filing step needs: its headers, text and HTML bodies, inline images and attachments, and an offline HTML page for rendering it (inline images embedded, remote resources removed, so rendering never fetches anything). |
 | `pkg/graph` | Package graph is a thin Microsoft Graph client: bearer auth, immutable message ids (stable across folder moves), text bodies, throttling retries and paging. |
 | `pkg/graphmail` | Package graphmail adapts Microsoft Graph mailbox data and reviewed operations to the provider-neutral mailbox contract. |
-| `pkg/imapmail` | Package imapmail provides verified TLS, read-only IMAP discovery and bounded occurrence synchronization, using a required scoped metadata collaborator. |
+| `pkg/imapmail` | Package imapmail provides verified TLS, read-only IMAP discovery, bounded complete content reads and occurrence synchronization using scoped metadata evidence. |
 | `pkg/keychain` | Package keychain stores secrets in the macOS login Keychain through the security tool. |
 | `pkg/mailbox` | Package mailbox defines provider-neutral accounts, message identities, collection memberships and optional reviewed capabilities. |
 | `pkg/mailsync` | Package mailsync coordinates account-bound sync passes. |
@@ -73,3 +73,15 @@ Everything personal lives outside the repository: configuration, templates namin
 `pkg/stage/injection_test.go` and `pkg/apply/injection_test.go` exercise instruction overrides, role spoofing, request-shaped text, hostile model response fields, and attempts to expand or execute a stored plan. Run them with `go test ./pkg/stage ./pkg/apply -run 'Injection|Compromised|Hostile'`.
 
 The fixtures are invented, use reserved example domains, and contain no mailbox excerpts, owner decisions or private policy settings. Tests use a local mock model endpoint, a temporary database and a fake mailbox; they require no credentials or live services. The mock deliberately supplies an attacker-favourable score to check containment even when classification fails. Passing these tests does not establish a live model's resistance to injection, or the safety of an agent reading message text through CLI output. Such text remains untrusted and cannot grant approval.
+
+## Bounded provider content
+
+IMAP content reads reuse the shared streaming MIME/document layer and retain
+read-only occurrence identity checks. BODYSTRUCTURE supplies accurate attachment
+metadata without repeated full-source downloads. Operation-owned private spools
+share a finite aggregate quota, and decoded expansion, headers, nesting and
+materializations have separate finite limits. Incomplete content yields protective
+review/keep evidence before model evaluation; cleanup errors remain surfaced.
+Cleanup preserves operation values with a cancellation-independent five-second
+context. See [bounded IMAP content](adr/0005-bounded-imap-content.md) for exact
+limits, ownership/accounting, cleanup and the actual content/sync composition seam.

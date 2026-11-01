@@ -187,11 +187,20 @@ func newShowCommand(deps Deps) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				raw, err := document.ReadSource(cmd.Context(), g, ref)
-				if err != nil {
-					return err
+				scope, e := document.NewScope(document.Limits{})
+				if e != nil {
+					return e
 				}
-				return agent.Text(headerBlock(raw), agent.Limit())
+				source, e := document.OpenSource(cmd.Context(), g, ref, scope)
+				if e != nil {
+					return errors.Join(e, scope.Close())
+				}
+				block, e := source.Header(cmd.Context())
+				e = errors.Join(e, source.Close(), scope.CloseContext(cmd.Context()))
+				if e != nil {
+					return e
+				}
+				return agent.Text(block, agent.Limit())
 			}
 			body, err := messageBody(cmd.Context(), s, m, lazyProvider(cmd.Context(), deps))
 			if err != nil {

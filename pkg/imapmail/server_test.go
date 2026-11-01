@@ -32,6 +32,8 @@ type scriptServer struct {
 	metadataFetches int
 	watermarks      map[string]selected
 	sourceReply     string
+	structureReply  string
+	sourceFetches   int
 	folders         map[string][]scriptMessage
 	fetchReply      string
 	authFail        bool
@@ -138,6 +140,10 @@ func (s *scriptServer) serve(c net.Conn) {
 		}
 		s.commands = append(s.commands, audit)
 		caps, special, validity := s.caps, s.special, s.validity
+		structureReply := s.structureReply
+		if strings.Contains(line, "BODY.PEEK[]") {
+			s.sourceFetches++
+		}
 		messages := append([]scriptMessage(nil), s.messages...)
 		if scoped, ok := s.folders[selectedFolder]; ok {
 			messages = append([]scriptMessage(nil), scoped...)
@@ -258,6 +264,11 @@ func (s *scriptServer) serve(c net.Conn) {
 					end := min(start+length, len(m.source))
 					chunk := m.source[start:end]
 					fmt.Fprintf(c, "* %d %s (UID %d RFC822.SIZE %d BODY[]<%d> {%d}\r\n%s)\r\n", prefix, kind, m.uid, len(m.source), start, len(chunk), chunk)
+				} else if strings.Contains(line, "BODYSTRUCTURE") {
+					if structureReply == "" {
+						structureReply = `("TEXT" "PLAIN" ("CHARSET" "UTF-8") NIL NIL "7BIT" 16 1 NIL NIL NIL NIL)`
+					}
+					fmt.Fprintf(c, "* %d %s (UID %d RFC822.SIZE %d BODYSTRUCTURE %s)\r\n", prefix, kind, m.uid, len(m.source), structureReply)
 				} else {
 					fmt.Fprintf(c, "* %d %s (UID %d FLAGS (%s) INTERNALDATE \"01-Jan-2026 00:00:00 +0000\" RFC822.SIZE %d ENVELOPE (NIL \"invented\" NIL NIL NIL NIL NIL NIL NIL \"<duplicate@example.org>\"))\r\n", prefix, kind, m.uid, m.flags, len(m.source))
 				}
