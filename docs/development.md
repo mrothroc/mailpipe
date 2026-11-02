@@ -38,3 +38,73 @@ These checks complement the example-domain privacy guard; a clean secret scan do
 ## Generated documentation
 
 `make docs` updates the package table in `docs/architecture.md` using the repository's Go generator. `make docs-check` verifies that the table matches package comments without writing the file. Missing, duplicated or reversed region markers fail validation. No external documentation or workflow tool is required.
+
+## Exact candidate source delivery (Stage 1)
+
+The existing merge-result release gate remains intact. A sequential required
+`candidate_formula` job checks out `${{ github.event.pull_request.head.sha || github.sha }}`,
+verifies the full commit and clean source, installs the same test prerequisites,
+and runs `make install-security-tools` and `make check` at that exact candidate.
+It then runs:
+
+```sh
+/bin/bash tools/acceptance/candidate-formula.sh --ci --candidate "$EXPECTED_CANDIDATE"
+```
+
+This command refuses ordinary local use before any Brew invocation. Real install
+is permitted only in the disposable GitHub-hosted `macos-15` job; temporary HOME
+alone does not protect a personal Brew prefix/Cellar or isolate the OS Keychain.
+The harness archives the exact commit, verifies the embedded commit and SHA256,
+serves only that archive over held loopback port 0, creates a unique temporary tap,
+trusts only its candidate formula, and runs `brew install --build-from-source`,
+`brew test`, and the absolute installed binary's help/examples/synthetic Graph
+config and Yahoo config/capability smoke. It never authenticates or syncs mail.
+Graph capability discovery is excluded because it needs a real authenticated subject.
+All mailpipe calls, including formula help, receive owned HOME/config/db/output
+paths first. Candidate errors and cleanup failures block CI.
+
+Local developer checks use only synthetic temporary resources and fake phase
+children, never Brew installation or Keychain:
+
+```sh
+go test ./tools/acceptance -list TestCandidateFormulaServerLifecycle
+go test -race -count=1 ./tools/acceptance
+go test ./internal/mailpipe/cli -list 'TestYahooReadOnlyPilot|TestProviderCredentialIsolation|TestYahooPermanentBindingReopen|TestYahooProcessingConsent|TestYahooExecuteEmptyAndAlreadySaved'
+```
+
+`make check` discovers the new tests normally. It never invokes real candidate
+installation. Cleanup uses one shared budget: command time and owned-group joins consume the
+same remaining allowance, including Brew cleanup, Go cache removal and final root
+removal. The 44-second orchestration allowance reserves a second for clock/scheduling
+granularity under the 45-second design bound. Uncertain or over-budget cleanup fails;
+no timeout can promise to interrupt an unkillable kernel/filesystem operation.
+The explicit success path checks the cleanup result before reporting success. Owned
+artifact deletion uses pinned directory descriptors and verifies owner/device/inode;
+it grants owner access only to those directories when read-only build/cache modes
+prevent removal. It never chmods regular files or follows link targets, and refuses
+hardlinked files, special files, ownership changes or bounded-traversal exhaustion.
+The final removal phase shares the same aggregate deadline; any failure retains a
+nonzero result and cannot become a successful installation report.
+Bootstrap failure/cancellation tests invoke the same supervisor/fallback path as CI
+with synthetic compiler children before helper readiness. Shared phase tests use
+`/bin/bash`, including its Bash 3.2 nounset behavior, with and without the optional
+child observer; they check failure status and single-owner teardown. The lifecycle test runs
+the actual shell traps/server, including
+parallel held ports, readiness failure, install failure, signals and phase timeout.
+Private receipt/confinement/projection tests use only invented values and temporary
+roots. The source-building installed smoke is additional required CI evidence;
+a helper test does not replace it.
+
+The new job has a 30-minute cap: prerequisites/full checks have an 18-minute step
+budget and installation/cleanup a 10-minute step budget. Seven fixed timing phases
+are reported without arbitrary output: prerequisites, exact-candidate-make-check,
+archive-readiness, install, formula-test, installed-smoke, cleanup. Missing final
+records after abrupt cancellation mean incomplete evidence. Review actual job logs,
+candidate/hash, runner/Brew/Go provenance, installed results and owned teardown
+before acceptance. No archives, caches, homes or private receipts are uploaded.
+Only an actual successful required `macos-15` run establishes that tested baseline;
+other versions/architectures are unverified. See [ADR 0007](adr/0007-provider-acceptance-and-delivery.md).
+
+Stage 2 is a later owner-attended live Yahoo pilot, never a CI step. Specific consent
+and a private completed receipt are required for release acceptance. Publication
+of a normal tag/tap and deployment remain separately approved later ceremonies.

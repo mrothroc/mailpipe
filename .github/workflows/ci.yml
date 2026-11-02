@@ -54,3 +54,63 @@ jobs:
 
       - name: Run release gate
         run: make check
+
+  candidate_formula:
+    name: Exact candidate source installation (macos-15)
+    needs: check
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      EXPECTED_CANDIDATE: ${{ github.event.pull_request.head.sha || github.sha }}
+      MAILPIPE_CANDIDATE_RUNNER: macos-15
+      GOTOOLCHAIN: local
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_ANALYTICS: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Install current stable Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+
+      - name: Exact candidate prerequisites and full release gate
+        timeout-minutes: 18
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_CANDIDATE" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CANDIDATE"
+          test -z "$(git status --porcelain)"
+          printf '| Phase | Seconds | Result |\n|---|---:|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          phase() {
+            local name=$1 start end status=0
+            shift
+            start=$(date +%s)
+            printf '[candidate-formula] phase=%s start=%s\n' "$name" "$(date -u +%FT%TZ)"
+            "$@" || status=$?
+            end=$(date +%s)
+            printf '[candidate-formula] phase=%s elapsed_seconds=%s exit=%s\n' "$name" "$((end-start))" "$status"
+            printf '| %s | %s | exit %s |\n' "$name" "$((end-start))" "$status" >> "$GITHUB_STEP_SUMMARY"
+            return "$status"
+          }
+          phase prerequisites bash -euo pipefail -c '
+            brew install poppler
+            test -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version
+            command -v pdftotext
+            make install-security-tools
+          '
+          phase exact-candidate-make-check make check
+
+      - name: Install and smoke exact candidate with owned teardown
+        timeout-minutes: 10
+        run: /bin/bash tools/acceptance/candidate-formula.sh --ci --candidate "$EXPECTED_CANDIDATE"

@@ -1,76 +1,83 @@
 # Operations
 
-How to run a scan by hand, and which steps need the owner. Scans are manual for now; a launchd schedule comes later ([PLAN.md](../PLAN.md)).
+Engineering evidence, owner-attended acceptance and later publication are separate.
+All examples are blank or invented. Scans are manual; no schedule is installed.
 
-## Yahoo read-only setup
+## 1. Scope and capability boundaries
 
-Use `mailpipe config init --provider yahoo --login <exact-login>` with separate
-private configuration/database paths for each account. `--endpoint` accepts the
-[documented implicit-TLS grammar](adr/0006-yahoo-read-only-setup.md); omitting it
-uses the provider default. If special-use role evidence is missing, configure
-exact existing selectable paths in private `imap.role_mappings` with keys
-`sent`, `trash` and `junk`; discovery validates them and creates no folders. Inspect `config init --help`, `account show` and
-`account capabilities`. Enter the app password through hidden stdin with
-`auth login`; nonterminal secure producers require `--password-stdin`. Never put
-a password in argv, environment or a file. `auth status` reports stored credential
-readiness, not a fresh remote authentication proof.
+| Capability | Graph | Yahoo read-only pilot |
+|---|---|---|
+| Sync, local listing and complete bounded body/MIME reads | supported | supported |
+| Configured stages and local reviewed plans | supported | supported |
+| Reviewed trash and managed native sender rules | supported with specific approval | unavailable |
+| Archive/native filter parity | provider-specific, never inferred | unavailable |
+| `apply`, `rules apply`, `save --execute` | specific owner approval required | refused before effects |
 
-Yahoo supports real read-only sync/content, configured stages and local plans.
-Native rule installation and all three `apply`, `rules apply` and `save` execution
-paths are unavailable, even for empty plans or already-saved records. Scan-time
-policy remains local intent and does not install Yahoo filters. Dry save checks
-a manifest without authorizing PDF output.
+Yahoo scan-time policy is local intent, not server-filter installation. Dry save
+checks a manifest; it does not imply Yahoo PDF execution support. Gmail implementation,
+Yahoo mutations/native filters and unattended execution are deferred. A test named
+`TestYahooReadOnlyPilot` is synthetic, not proof of a live pilot.
 
-Fresh setup disables model and trusted subprocess transfers. After inspecting
-the exact account, explicitly configure `config processing --account <id>
---models=true` and/or `--external-stages=true` only for owner-authorized processing.
-The flags authorize separate scopes. Existing Graph configurations without a
-processing record retain configured legacy behavior; fresh Graph setup defaults
-off too. Explicit records apply only to their exact account.
+The publication lifecycle, permanent account/provider binding, complete-content
+limits and protective review/keep verdicts remain unchanged; see [architecture](architecture.md)
+and ADRs 0001–0006. Capabilities do not confer owner approval.
 
-Changing endpoint/login requires a different database; there is no rebind. Failed
-credential persistence leaves incomplete readiness: retry `auth login` with fresh
-input for the same principal. A routing-save failure retains database binding;
-repair only the same principal's configuration. Gmail OAuth and policy integration
-are not part of this pilot.
+## 2. Provider setup, attribution and processing permissions
 
-## What needs the owner's approval
+Absent provider preserves Graph configuration. Follow the Microsoft 365 registration
+instructions in [README](../README.md). Yahoo requires a separate private configuration
+and database for each exact principal. Inspect `config init --help` first. In the
+owning user session, after applicable consent:
 
-Read-only and recording steps can run freely. Each of these changes mail, the server or the owner's files, and needs the owner's approval for that specific change:
+```sh
+mailpipe config init --provider yahoo --login alex@example.com
+mailpipe auth login
+mailpipe account show
+mailpipe account capabilities
+mailpipe auth status
+```
 
-| Command | Effect |
-|---|---|
-| `apply <plan> --execute` | moves the plan's messages to Deleted Items |
-| `rules apply --execute` | rewrites the managed blocklist rules on the mail server |
-| `save --manifest <file> --execute` | writes PDFs into `~/Documents` |
-| changes to `~/mail/stages.json` or `~/mail/templates.json` | change what future scans do; back the file up first |
+The login is invented. The owner supplies their actual login privately, never in
+chat. `auth login` hides terminal input; approved nonterminal secure producers need
+`--password-stdin`. No password belongs in argv, environment, configuration or a file.
+`auth status` reports stored readiness, not fresh remote authentication proof.
+Actual account/config/auth outputs contain private routing and must stay private.
 
-Without `--execute`, each of these commands is a check that changes nothing. Run it first and show the owner the result.
+The optional `--endpoint` accepts only the [implicit verified-TLS grammar](adr/0006-yahoo-read-only-setup.md).
+Omitted endpoint uses the provider default; omitted port means 993. DNS ASCII case
+and explicit default port are canonicalized; login case/spaces remain exact opaque
+bytes. No URI, insecure TLS or guessed principal normalization is available. If role
+evidence is missing, private `imap.role_mappings` can name exact existing selectable
+paths with `sent`, `trash`, `junk` keys. Discovery validates them and creates no folder.
+Yahoo requires acknowledged full-view UIDONLY support; capped views fail closed.
 
-## A manual scan
+Fresh Graph/Yahoo setup disables model and external subprocess transfers separately.
+Only explicit account-scoped authorization through `config processing --account <id>`
+with `--models=true` and/or `--external-stages=true` enables those scopes. This pilot
+procedure enables neither. Existing Graph configurations without a processing record
+retain configured legacy behavior; explicit records apply only to their exact account.
+See [stages](stages.md) and [hooks](hooks.md). Trusted hooks retain OS permissions;
+metadata-only subprocesses also require consent. No mail should be returned to an AI
+as a supposed local-only inspection.
 
-1. **`mailpipe sync`** updates the mirror. The local count must equal the server's for every folder.
-2. **Run the stages** in the order `mailpipe stages` lists them, each with `--since 1d` (or the time since the last scan). Stages that only make sense on another's labels take `--labelled stage:label` too. For example, a transaction classifier can run on `category:transactional` and an event check on `category:event`. See [stages.md](stages.md).
-3. **`mailpipe plan create`**, then read the plan (`plan show <n>`). Look for:
-   - a platform or system sender about to be blocked, such as a quarantine or notification service;
-   - a label that doesn't fit the email;
-   - a sender the owner keeps.
+## 3. Migration, preflight and rollback safeguards
 
-   Fix the policy and create the plan again rather than applying a wrong one.
-4. **`mailpipe apply <n>`** (a check), then `--execute` with approval. Its hint gives Graph's before and after counts.
-5. **`mailpipe rules diff`**, then `rules apply --execute` with approval, when the plan blocked new senders.
-6. **Filing:** run the template stage with `--since`, then `file draft --out <new file>`. Show the owner the draft, then `save … --execute` with approval. Bring the owner `file queue --records tx-kind:record`. See [filing.md](filing.md).
+Changing endpoint, login or provider requires a different database; there is no
+rebind. Same-principal password rotation preserves history. Restoring the exact old
+configured tuple can reopen its original database. Service-side reassignment of the
+same login is not immutable identity proof: use a different database. Headers and
+matching message content cannot establish account continuity.
 
-Costs depend on the configured stages, models and message volume. Set explicit cost caps.
+Before migration or recovery, stop older nonparticipating clients and close database
+sessions. Preserve the verified backup and SQLite recovery siblings. Do not raw-copy a
+live WAL database, delete lifecycle lock files, replace a bound database or downgrade
+its schema. Failed migrations roll back; uncertain outcomes require reconciliation.
+Offline restoration uses a fresh private destination and the existing verified restore
+API, with exclusive lifecycle ownership; there is no general CLI restore command to
+invent. Rolling back a binary does not prove compatibility with a newer database.
+Retain the current recovery set and verify version compatibility before opening it.
 
-## When things go wrong
-
-- **Interrupted:** every command resumes. Rerun the same command.
-- **Signed out:** `mailpipe auth login` (a device code to enter in a browser). A command that needs sign-in says so, with exit code 3.
-- **A wrong deletion:** the mail is in Deleted Items. `actions <plan>` lists what moved. Deleted Items is purged from time to time, so act soon, and save anything worth keeping before it goes.
-- **Blank metadata after a sync:** fixed in the sync. A full pass (`sync --folder inbox --full`) repairs any older blank rows.
-
-## Attributing an existing Graph mirror
+### Attributing an existing Graph mirror
 
 Existing configuration without a provider still uses Microsoft 365. A new empty
 mirror binds to the authenticated immutable mailbox subject on its first sync.
@@ -104,3 +111,223 @@ An uncertain move or failed action audit requires reconciliation before another
 execute attempt. Failed sync cleanup is reported separately; close sessions before
 exclusive abandoned-staging maintenance. No command automatically discards another
 session's staging or weakens lifecycle locks.
+
+## 4. Stage 1: synthetic conformance and candidate delivery
+
+Stage 1 is automated engineering/CI. Inputs are public source, invented fixtures,
+local test servers and fake credentials/models. It never requests or uses real
+mailbox, model or Keychain credentials. Default `make check` never installs into a
+personal Brew prefix, Cellar or tap.
+
+Run the full release gate and explicitly discover/run the provider conformance and
+acceptance tests described in [development](development.md). Existing Graph behavior,
+account isolation, full MIME/body boundaries, read flags, protection verdicts and
+hook/filing/security regressions remain required. Synthetic success is not live
+acceptance and cannot fill Stage 2 checks.
+
+The required sequential `candidate_formula` CI job validates the exact PR head/event
+commit on `macos-15`, including another full `make check`, then runs the checked-in
+candidate harness. Its `git archive` commit, SHA256, loopback download and formula
+checksum must agree. It builds from source, runs `brew test` and absolute installed
+help/examples/synthetic Graph config plus Yahoo config/capability/default-off smoke.
+It does not run installed Graph capabilities, auth/login/status/sync or models.
+The Graph capability command requires a real authenticated subject; it is not a
+synthetic setup smoke command.
+
+Real Brew tests use only a disposable GitHub-hosted job's default prefix. Temporary
+HOME alone does not isolate Cellar/taps or the OS Keychain. Ordinary local harness
+installation is refused before Brew. A held `127.0.0.1:0` server serves only the
+exact archive, with a bounded readiness handshake. Candidate-only trust, owned
+process teardown and archive/tap/HOME cleanup are mandatory on success, failure and
+catchable cancellation. The normal tap/tag remains unchanged.
+
+Review actual exact-candidate Actions logs for install, help/examples/config results,
+checksum, supported runner/provenance, timing and teardown. The declared validation
+target is `macos-15` only; successful evidence is required before calling it tested.
+Other macOS versions/architectures are unverified. No successful candidate install
+or completed pilot is established merely by this runbook. Abrupt termination without
+final records is incomplete, not successful zero-time evidence; repeat the same
+reviewed candidate on a fresh runner. See [ADR 0007](adr/0007-provider-acceptance-and-delivery.md).
+
+## 5. Stage 2: owner-attended live checks and private receipt
+
+Stage 2 is a distinct interactive session **after** a tested, reviewable candidate
+and specific account-owner consent. Engineering/planning permission does not grant
+live mailbox/auth/Keychain/model access, publication or deployment. Missing owning
+session/access is a release-acceptance blocker, not a waived check. CI never runs
+this stage. The owner enters credentials only through their secure CLI/session.
+
+Before requesting consent, prepare the instructions below, the candidate identity,
+Stage 1 results and recovery procedure for review. Consent must cover the selected
+account's read-only sync/content, private local storage and bounded negative checks;
+model/subprocess processing remains off. A separate opaque consent reference lives
+with the private record, not owner/account identity. No raw mail, protocol transcript,
+login, endpoint, message ID, private folder/policy/classifier details are required.
+
+Choose an explicit absolute private root outside **every** repository/worktree and
+Git common directory. Its existing directory must be owned and mode 0700; all receipt
+files are exclusive regular single-link 0600. Canonical paths must have no symlink
+components, unsafe writable ancestors, repository ancestors or alias/race ambiguity.
+Run the acceptance helper from the reviewed source; it checks worktree/common-dir
+inventory and unrelated enclosing Git/bare repositories and refuses unsafe paths.
+It never chmods/adopts existing unsafe files. Stable private namespace against a
+hostile process running as the same user is an explicit assumption.
+
+```sh
+# The owner chooses these values privately; the root must already exist with mode 0700.
+go run ./tools/acceptance receipt-init --private-root "$PRIVATE_ACCEPTANCE_ROOT" --candidate "$CANDIDATE_COMMIT"
+```
+
+This creates only pending `receipt.json` and `consent.json`, never runs mail commands
+or proves consent. If the second creation fails, initialization remains an error
+and retains the receipt and existing artifacts for private review. It never deletes
+a current pathname as rollback: a concurrent editor may have replaced or changed
+that file. Quiesce writers and privately inspect partial state before an owner
+chooses any removal/retry; another init will refuse existing files. A standardized
+blank/invented receipt has this shape (zeros are
+invented placeholders, not actual counts):
+
+```json
+{
+  "version": 1,
+  "candidate_commit": "",
+  "provider": "yahoo",
+  "platform": "macos-15",
+  "consent_reference": "",
+  "checks": {
+    "consent": "pending", "stage1": "pending", "initial_sync": "pending",
+    "repeated_sync": "pending", "incremental_change": "pending",
+    "complete_readable_body": "pending", "full_mime_transport": "pending",
+    "read_flags_unchanged": "pending", "account_isolation": "pending",
+    "execute_apply": "pending", "execute_rules": "pending", "execute_save": "pending",
+    "processing_disabled": "pending", "recovery_reviewed": "pending"
+  },
+  "aggregate_counts": {"initial": 0, "repeat": 0, "incremental": 0},
+  "stage1_technical": {
+    "archive_hash_verified": false, "installed_help": false, "installed_examples": false,
+    "graph_config": false, "yahoo_config": false,
+    "yahoo_read_only_capabilities": false, "owned_cleanup": false
+  }
+}
+```
+
+Use the exact independently verified 40-hex candidate. `platform` may be the generic
+`macos` for the owner session; the public declared CI baseline remains `macos-15`. Only `pending`, `pass`, `fail`
+are valid check values. Private counts are nonnegative aggregate totals, never folder
+labels or raw CLI outputs. The generated consent record has version, opaque 32-hex
+`reference`, `owner_confirmed`, `read_only_sync`, `content_reads`,
+`local_isolation_check`, `denied_execute_checks` booleans and ISO `date`; it starts
+unconfirmed. The owner records applicable consent privately before live commands.
+Neither file needs an owner name, signature/account identity or arbitrary notes.
+Edit only private copies with a trusted editor that preserves protections; validators
+refuse duplicate/unknown keys, null/wrong types, oversized input and unsafe links.
+
+After specific consent, the owner performs these checks in their session:
+
+1. Verify candidate binary/source and actual successful Stage 1 evidence. Select
+   separate private config/db/out/stages/templates paths for the intended principal.
+   Ensure the real HOME/mail credential-lock directory is private. Do not change HOME
+   to pretend to become another OS user. Configure and authenticate as in section 2;
+   privately inspect account/database identity, capabilities and readiness. Keep
+   processing disabled. Do not copy outputs into chat/review/CI.
+2. Record an independent read/unread baseline in the normal mail UI without opening
+   selected unread messages; quiesce other clients where feasible. Run
+   `mailpipe sync --folder inbox --full --json` and separately consented folders.
+   Privately compare per-folder local/remote totals; record only aggregate counts
+   and check results. Run ordinary repeated sync without `--full`, then a later
+   incremental sync after independently observed naturally arriving changes.
+   No-change repetition does not establish changed-incremental behavior: that check
+   stays pending until observed. Do not manufacture changes by sending/moving mail
+   without separate permission.
+3. Privately inspect `mailpipe show <n>` without `--no-quotes`; if display overflows,
+   inspect the full private overflow file. Verify complete readable content/tail and
+   relevant trailing dates against owner-known content. `mailpipe show <n> --headers`
+   drives a complete bounded MIME transport fetch before displaying the header block.
+   It is not raw MIME export or proof of every decoded part. Combine guarded fetch
+   success, owner body inspection and synthetic full-source integrity evidence; if
+   insufficient/inconclusive, leave pending and request a further specifically
+   approved owner-local check rather than silently adding an export seam.
+4. Verify UI read flags after body/header reads and another sync. Other-client churn
+   makes results inconclusive, not a preservation pass. Keep all IDs/content private.
+5. With consent to a bounded local negative check, create a separate synthetic
+   principal configuration and attempt sync against the already-bound pilot DB.
+   It must fail account mismatch before credential/network effects; verify original
+   binding/history unchanged. Never edit/rebind the real profile or use another
+   account's secret. Declining this check leaves account isolation pending.
+6. With specific permission for expected-denial probes at the reviewed candidate,
+   check `apply <local-or-empty-plan> --execute`, `rules apply --execute`, and
+   `save --manifest <nonexistent-private-file> --root <new-private-probe-target> --execute`.
+   These must report unsupported nonzero before effects, even when empty. Optionally
+   log out the same principal first to remove remote credential availability. Confirm
+   no destination/server/flag effects; synthetic collaborator-call tests provide
+   no-Keychain/no-provider-call proof. Unexpected success/effect stops acceptance
+   immediately; never retry a mutation. Do not run models/hooks or enable processing.
+7. Record results only after private review, retaining aggregate counts privately.
+   Do not report a complete pilot until every required check is verified at the
+   candidate and root has reviewed the authorized private evidence. Validators do
+   not independently observe the mailbox or grant consent.
+
+## 6. Failure, recovery and stop conditions
+
+TLS/full-view/capability/mapping failures stop; do not weaken verification, guess
+folders or accept a capped mailbox. Churn and transient errors retry only through
+the existing bounded lifecycle. Failed cleanup or uncertain publication/action
+outcomes require reconciliation before retry. Partial content is never successful
+body/MIME evidence; protective review/keep verdicts remain authoritative.
+
+Failed credential persistence leaves incomplete readiness. Repair with fresh hidden
+input to `auth login` for the same principal; do not select another secret or a file
+fallback. Endpoint/login change needs a different DB. Routing-save failure retains
+binding: repair configuration only for the same principal. See migration safeguards
+above. Cancel with Ctrl-C, retain private failure evidence and inspect errors locally.
+Only owner-approved same-principal logout/disposal is allowed; never delete shared
+locks or another account's Keychain items. No actual receipt is placed in the repo.
+
+### Ordinary reviewed Graph operation
+
+`sync` updates the mirror. Run configured stages in dependency order with an explicit
+time window (`--since`) and cost caps for paid stages. Review `plan create` and
+`plan show <n>`, checking protective classifications and the owner's private policy.
+Run `apply <n>` as a check before separately approved `--execute`. Inspect `rules diff`
+before separately approved `rules apply --execute`. Filing uses `file draft`, owner
+review, then separately approved `save --execute`; see [filing](filing.md). These
+Graph execution instructions do not apply to Yahoo. Read-only mail access in this
+specific acceptance exercise still requires the Stage 2 account consent above.
+
+A wrong Graph deletion may be recoverable in Deleted Items only while retained;
+`actions <plan>` lists attempts privately. Unknown remote outcomes must be reconciled,
+not replayed. Private policy/template changes require owner approval and backup.
+
+## 7. Redaction, acceptance and later publication gates
+
+Actual consent/receipts and summary proposals stay outside every repository/worktree.
+Never transfer receipt content, actual counts, consent references, timestamps,
+paths, identities, endpoints, private choices or arbitrary notes to public evidence.
+
+```sh
+go run ./tools/acceptance receipt-validate --private-root "$PRIVATE_ACCEPTANCE_ROOT" --candidate "$CANDIDATE_COMMIT"
+go run ./tools/acceptance summary-proposal --private-root "$PRIVATE_ACCEPTANCE_ROOT" --candidate "$CANDIDATE_COMMIT"
+```
+
+The proposal is a NEW fixed struct written exclusively as private
+`summary-proposal.json`, never stdout or a public path. Its allowlist is version,
+independently verified candidate commit, fixed `yahoo`, fixed declared Stage 1
+`macos-15`, the seven technical booleans above, and `pilot` (`pending` by default).
+Private counts/choices cannot become an allowed key's string value or nested data.
+After all checks and consent are privately reviewed, `--owner-reviewed` may propose
+`privately_verified`; the tool requires all check statuses pass and the matching
+confirmed consent scope. This flag does not itself authorize publication.
+
+Before any transfer, the owner opens only the proposal, checks exact schema/values,
+verifies candidate and technical evidence, confirms no private values/extra keys,
+and approves that specific transfer. Root independently reconstitutes only allowed
+technical results. Never attach/copy the original receipt, raw command output or
+consent. Automated reserved-domain canaries and count-shaped tests complement this
+manual review; a secret scan alone cannot detect personal preferences.
+
+Final task/release acceptance requires actual specifically consented private pilot
+completion, full checks, required exact-candidate installed CI and an approved scoped
+code review at the clean candidate. Stage 1 alone is insufficient. Publishing a
+normal release/tag/tap and deployment need later applicable approval. The ordinary
+tap then receives the released tag/checksum and current help assertion and its normal
+checks; no publication is required to test the pre-publication candidate.
