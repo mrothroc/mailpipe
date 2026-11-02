@@ -48,7 +48,7 @@ and runs `make install-security-tools` and `make check` at that exact candidate.
 It then runs:
 
 ```sh
-bash tools/acceptance/candidate-formula.sh --ci --candidate "$EXPECTED_CANDIDATE"
+/bin/bash tools/acceptance/candidate-formula.sh --ci --candidate "$EXPECTED_CANDIDATE"
 ```
 
 This command refuses ordinary local use before any Brew invocation. Real install
@@ -79,7 +79,9 @@ removal. The 44-second orchestration allowance reserves a second for clock/sched
 granularity under the 45-second design bound. Uncertain or over-budget cleanup fails;
 no timeout can promise to interrupt an unkillable kernel/filesystem operation.
 Bootstrap failure/cancellation tests invoke the same supervisor/fallback path as CI
-with synthetic compiler children before helper readiness. The lifecycle test runs
+with synthetic compiler children before helper readiness. Shared phase tests use
+`/bin/bash`, including its Bash 3.2 nounset behavior, with and without the optional
+child observer; they check failure status and single-owner teardown. The lifecycle test runs
 the actual shell traps/server, including
 parallel held ports, readiness failure, install failure, signals and phase timeout.
 Private receipt/confinement/projection tests use only invented values and temporary

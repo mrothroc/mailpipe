@@ -104,7 +104,7 @@ if [ "$ci" -eq 1 ]; then
   brew_bin=$(command -v brew)
 else
   [ -n "$mode" ] && [ -n "$test_helper" ] && [ -n "$parent" ] && [ -n "$observer" ] || refuse
-  case "$mode" in success|hold|startup-hold|install-failure|phase-timeout|readiness-timeout|server-failure|cleanup-failure|repeated-cleanup|archive-corruption|cleanup-budget|bootstrap-failure|bootstrap-hold) ;; *) refuse;; esac
+  case "$mode" in success|hold|startup-hold|install-failure|phase-timeout|readiness-timeout|server-failure|cleanup-failure|repeated-cleanup|archive-corruption|cleanup-budget|bootstrap-failure|bootstrap-hold|no-observer-success|no-observer-failure|no-observer-hold) ;; *) refuse;; esac
   candidate=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 fi
 [ -d "$parent" ] && [ -O "$parent" ] && [ ! -L "$parent" ] || refuse
@@ -144,11 +144,20 @@ export MAILPIPE_CONFIG="$root/mail/config.json" MAILPIPE_DB="$root/mail/mirror.d
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 GOTOOLCHAIN=local NO_PROXY=127.0.0.1 no_proxy=127.0.0.1
 # Run descendants in a minimal environment. Never inherit credentials, proxy secrets or test hooks.
 phase() {
-  local name=$1 duration=$2 result observer_args=() summary_target="${GITHUB_STEP_SUMMARY:-}"; shift 2
+  local name=$1 duration=$2 result summary_target="${GITHUB_STEP_SUMMARY:-}"; shift 2
   case "$name" in archive-readiness|cleanup) summary_target='';; esac
-  if [ "$ci" -eq 0 ]; then observer_args=(--observer "$root/phase-child"); fi
+  # Positional parameters remain safe when the optional prefix is empty on
+  # system Bash 3.2 with nounset; an empty array does not.
+  set -- -- "$@"
+  if [ "$ci" -eq 0 ]; then
+    case "$mode" in no-observer-*) ;; *) set -- --observer "$root/phase-child" "$@";; esac
+  fi
   launching=1
-  env -i TMPDIR="$root/tmp" PATH="$PATH" HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" LANG=C GOTOOLCHAIN=local XDG_CONFIG_HOME="$XDG_CONFIG_HOME" HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_CACHE="$HOMEBREW_CACHE" HOMEBREW_LOGS="$HOMEBREW_LOGS" HOMEBREW_TEMP="$HOMEBREW_TEMP" GOPATH="$GOPATH" GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 MAILPIPE_CONFIG="$MAILPIPE_CONFIG" MAILPIPE_DB="$MAILPIPE_DB" MAILPIPE_OUT_DIR="$MAILPIPE_OUT_DIR" MAILPIPE_STAGES="$MAILPIPE_STAGES" MAILPIPE_TEMPLATES="$MAILPIPE_TEMPLATES" GITHUB_STEP_SUMMARY="$summary_target" "$helper" run --phase "$name" --timeout "$duration" "${observer_args[@]}" -- "$@" &
+  (
+    # Only the parent owns wrapper cleanup, including shell launch failures.
+    trap - EXIT HUP INT TERM
+    exec env -i TMPDIR="$root/tmp" PATH="$PATH" HOME="$HOME" USER="${USER:-}" LOGNAME="${LOGNAME:-}" LANG=C GOTOOLCHAIN=local XDG_CONFIG_HOME="$XDG_CONFIG_HOME" HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_CACHE="$HOMEBREW_CACHE" HOMEBREW_LOGS="$HOMEBREW_LOGS" HOMEBREW_TEMP="$HOMEBREW_TEMP" GOPATH="$GOPATH" GOCACHE="$GOCACHE" GOMODCACHE="$GOMODCACHE" NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 MAILPIPE_CONFIG="$MAILPIPE_CONFIG" MAILPIPE_DB="$MAILPIPE_DB" MAILPIPE_OUT_DIR="$MAILPIPE_OUT_DIR" MAILPIPE_STAGES="$MAILPIPE_STAGES" MAILPIPE_TEMPLATES="$MAILPIPE_TEMPLATES" GITHUB_STEP_SUMMARY="$summary_target" "$helper" run --phase "$name" --timeout "$duration" "$@"
+  ) &
   phase_pid=$!
   registered
   observe phase
@@ -208,9 +217,10 @@ observe ready
 if [ "$ci" -eq 0 ]; then
   mkdir "$root/tap" "$root/trust" "$root/keg"
   case "$mode" in
-    install-failure) phase install 2s /usr/bin/false;;
+    install-failure|no-observer-failure) phase install 2s /usr/bin/false;;
     phase-timeout) phase install 100ms /bin/sleep 25;;
     hold) phase install 30s /bin/sleep 25;;
+    no-observer-hold) phase install 30s /bin/bash -c 'printf "%s" "$$" > "$1"; exec /bin/sleep 25' fixture "$root/fixture-child";;
     repeated-cleanup) cleanup; cleanup;;
     *) phase install 2s /usr/bin/true;;
   esac

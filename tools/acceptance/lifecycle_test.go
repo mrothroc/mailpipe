@@ -58,7 +58,7 @@ func runTool(t *testing.T, args ...string) ([]byte, error) {
 	return exec.Command(tool(t), args...).CombinedOutput()
 }
 func TestCandidateFormulaLocalRefusal(t *testing.T) {
-	c := exec.Command("bash", shellScript, "--ci", "--candidate", strings.Repeat("a", 40))
+	c := exec.Command("/bin/bash", shellScript, "--ci", "--candidate", strings.Repeat("a", 40))
 	c.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temp(t)}
 	b, e := c.CombinedOutput()
 	if e == nil || !bytes.Contains(b, []byte("CI-only")) {
@@ -87,7 +87,7 @@ func startShell(t *testing.T, mode string) *shellRun {
 	parent := temp(t)
 	r := &shellRun{done: make(chan error, 1), observer: filepath.Join(parent, "observer")}
 	os.WriteFile(filepath.Join(parent, "sibling"), []byte("untouched"), 0600)
-	r.cmd = exec.Command("bash", shellScript, "--lifecycle-test", mode, "--helper", tool(t), "--test-parent", parent, "--observer", r.observer)
+	r.cmd = exec.Command("/bin/bash", shellScript, "--lifecycle-test", mode, "--helper", tool(t), "--test-parent", parent, "--observer", r.observer)
 	r.cmd.WaitDelay = 2 * time.Second
 	r.cmd.Stdout = &r.output
 	r.cmd.Stderr = &r.output
@@ -125,7 +125,7 @@ func startShell(t *testing.T, mode string) *shellRun {
 			}
 		}
 		for root := range roots {
-			for _, name := range []string{"phase-child", "bootstrap-child"} {
+			for _, name := range []string{"phase-child", "bootstrap-child", "fixture-child"} {
 				if raw, e := os.ReadFile(filepath.Join(root, name)); e == nil {
 					pid, e := strconv.Atoi(string(raw))
 					if e == nil && pid > 0 {
@@ -248,6 +248,71 @@ func assertGone(t *testing.T, o observation) {
 	}
 }
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// Exercise the checked-in phase function under the same system shell as CI.
+// Only fake phase children run; these modes never pass real Brew admission.
+func TestCandidateFormulaOptionalObserver(t *testing.T) {
+	for _, mode := range []string{"no-observer-success", "no-observer-failure", "no-observer-hold", "hold"} {
+		t.Run(mode, func(t *testing.T) {
+			r := startShell(t, mode)
+			o := r.observe(t, "ready")
+			if strings.HasSuffix(mode, "hold") {
+				o = r.lastObservation(o)
+				r.observe(t, "phase")
+				marker := "fixture-child"
+				if mode == "hold" {
+					marker = "phase-child"
+				}
+				deadline := time.Now().Add(3 * time.Second)
+				for time.Now().Before(deadline) {
+					if b, e := os.ReadFile(filepath.Join(o.Root, marker)); e == nil && len(b) > 0 {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				raw, e := os.ReadFile(filepath.Join(o.Root, marker))
+				if e != nil || len(raw) == 0 {
+					t.Fatal("phase child never started")
+				}
+				pid, e := strconv.Atoi(string(raw))
+				if e != nil || pid <= 0 {
+					t.Fatal("invalid fixture child identity")
+				}
+				t.Cleanup(func() {
+					if syscall.Kill(pid, 0) == nil {
+						t.Error("phase child remains")
+						syscall.Kill(pid, syscall.SIGKILL)
+					}
+				})
+				_, e = os.Stat(filepath.Join(o.Root, "phase-child"))
+				if (mode == "hold") != (e == nil) {
+					t.Fatal("optional observer selection failed")
+				}
+				r.cmd.Process.Signal(syscall.SIGTERM)
+			}
+			r.finish(t, mode == "no-observer-success")
+			wantExit := 0
+			if mode == "no-observer-failure" {
+				wantExit = 1
+			}
+			if strings.HasSuffix(mode, "hold") {
+				wantExit = 143
+			}
+			if r.cmd.ProcessState.ExitCode() != wantExit {
+				t.Fatalf("lost original phase status: %v", r.cmd.ProcessState)
+			}
+			assertGone(t, r.lastObservation(o))
+			output := r.output.String()
+			if strings.Count(output, "cleanup_elapsed_seconds=") != 1 || strings.Contains(output, "unbound variable") {
+				t.Fatalf("cleanup was not owned once: %s", output)
+			}
+			if !strings.Contains(output, "phase=install") {
+				t.Fatalf("shared phase did not execute: %s", output)
+			}
+		})
+	}
+}
+
 func TestCandidateFormulaServerLifecycle(t *testing.T) {
 	t.Run("parallel-held-ports", func(t *testing.T) {
 		a := startShell(t, "hold")
@@ -384,7 +449,7 @@ func TestProductionRejectsLifecycleOverridesBeforeBrew(t *testing.T) {
 	marker := filepath.Join(d, "brew-called")
 	os.WriteFile(brew, []byte("#!/bin/sh\nprintf called > '"+marker+"'\nexit 91\n"), 0700)
 	for _, option := range []string{"--lifecycle-test", "--helper", "--test-parent", "--observer"} {
-		c := exec.Command("bash", shellScript, "--ci", "--candidate", strings.Repeat("a", 40), option, "fixture")
+		c := exec.Command("/bin/bash", shellScript, "--ci", "--candidate", strings.Repeat("a", 40), option, "fixture")
 		c.Env = []string{"PATH=" + d + ":/usr/bin:/bin", "GITHUB_ACTIONS=true", "RUNNER_ENVIRONMENT=github-hosted", "RUNNER_OS=macOS", "GITHUB_JOB=candidate_formula", "MAILPIPE_CANDIDATE_RUNNER=macos-15", "EXPECTED_CANDIDATE=" + strings.Repeat("a", 40)}
 		b, e := c.CombinedOutput()
 		if e == nil || !bytes.Contains(b, []byte("CI-only")) {

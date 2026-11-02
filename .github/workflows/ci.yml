@@ -113,4 +113,4 @@ jobs:
 
       - name: Install and smoke exact candidate with owned teardown
         timeout-minutes: 10
-        run: bash tools/acceptance/candidate-formula.sh --ci --candidate "$EXPECTED_CANDIDATE"
+        run: /bin/bash tools/acceptance/candidate-formula.sh --ci --candidate "$EXPECTED_CANDIDATE"
