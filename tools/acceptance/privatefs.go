@@ -257,18 +257,110 @@ func ownedRoot(verb, path, identity string) error {
 	}
 	b, e := io.ReadAll(io.LimitReader(f, 256))
 	f.Close()
-	if e != nil || string(b) != identity || !strings.HasPrefix(identity, fmt.Sprintf("%d:%d:", p.dev, p.ino)) || !p.stable() {
+	if privateTestHook != nil {
+		privateTestHook()
+	}
+	if e != nil || string(b) != identity || !strings.HasPrefix(identity, fmt.Sprintf("%d:%d:", p.dev, p.ino)) || !p.matches(".owner", &marker) || !p.stable() {
 		return errInvalid
 	}
-	parent, e := os.OpenRoot(filepath.Dir(path))
+	// Pin the actual parent of the registered root, rather than resolving a
+	// path again during deletion. Every descendant is opened without following
+	// symlinks. Only an owned directory descriptor may gain owner permissions;
+	// Go's extracted module directories are read-only by default.
+	parent, e := unix.Openat(p.fd, "..", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if e != nil {
 		return errInvalid
 	}
-	defer parent.Close()
-	if parent.RemoveAll(filepath.Base(path)) != nil {
+	defer unix.Close(parent)
+	var rootStat unix.Stat_t
+	if unix.Fstat(p.fd, &rootStat) != nil || !sameEntry(parent, filepath.Base(path), &rootStat) {
 		return errInvalid
 	}
+	remaining := 100000
+	if removeOwnedContents(p.fd, p.dev, 0, &remaining) != nil || !p.stable() {
+		return errors.New("candidate-root-removal-failed: owned teardown incomplete")
+	}
+	// Children removed above change the root's link count, not its identity.
+	if unix.Fstat(p.fd, &rootStat) != nil || !sameEntry(parent, filepath.Base(path), &rootStat) || unix.Unlinkat(parent, filepath.Base(path), unix.AT_REMOVEDIR) != nil {
+		return errors.New("candidate-root-removal-failed: owned teardown incomplete")
+	}
 	return nil
+}
+
+func sameEntry(parent int, name string, expected *unix.Stat_t) bool {
+	var current unix.Stat_t
+	return unix.Fstatat(parent, name, &current, unix.AT_SYMLINK_NOFOLLOW) == nil && current.Dev == expected.Dev && current.Ino == expected.Ino && current.Mode&unix.S_IFMT == expected.Mode&unix.S_IFMT && current.Uid == expected.Uid && current.Nlink == expected.Nlink
+}
+
+func removeOwnedContents(fd int, dev uint64, depth int, remaining *int) error {
+	if depth > 128 {
+		return errInvalid
+	}
+	var dir unix.Stat_t
+	if unix.Fstat(fd, &dir) != nil || dir.Mode&unix.S_IFMT != unix.S_IFDIR || dir.Uid != uint32(os.Geteuid()) || uint64(dir.Dev) != dev {
+		return errInvalid
+	}
+	// No path-based recursive chmod: the pinned, same-owner directory alone
+	// gains owner rwx. Regular files, hardlinks and link targets are never chmodded.
+	if dir.Mode&0700 != 0700 && unix.Fchmod(fd, uint32(dir.Mode&0777)|0700) != nil {
+		return errInvalid
+	}
+	duplicate, e := unix.Dup(fd)
+	if e != nil {
+		return errInvalid
+	}
+	f := os.NewFile(uintptr(duplicate), "owned candidate directory")
+	defer f.Close()
+	for {
+		names, e := f.Readdirnames(128)
+		if e != nil && e != io.EOF {
+			return errInvalid
+		}
+		for _, name := range names {
+			*remaining--
+			var st unix.Stat_t
+			if *remaining < 0 || unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW) != nil || st.Uid != uint32(os.Geteuid()) || uint64(st.Dev) != dev {
+				return errInvalid
+			}
+			flags := 0
+			switch st.Mode & unix.S_IFMT {
+			case unix.S_IFDIR:
+				child, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+				if err != nil {
+					return errInvalid
+				}
+				var opened unix.Stat_t
+				err = unix.Fstat(child, &opened)
+				if err == nil && opened.Dev == st.Dev && opened.Ino == st.Ino {
+					err = removeOwnedContents(child, dev, depth+1, remaining)
+				} else {
+					err = errInvalid
+				}
+				if err == nil {
+					err = unix.Fstat(child, &opened)
+				}
+				unix.Close(child)
+				if err != nil || opened.Dev != st.Dev || opened.Ino != st.Ino {
+					return errInvalid
+				}
+				// Removing subdirectories changes the directory's link count.
+				st.Nlink = opened.Nlink
+				flags = unix.AT_REMOVEDIR
+			case unix.S_IFREG, unix.S_IFLNK:
+				if st.Nlink != 1 {
+					return errInvalid
+				}
+			default:
+				return errInvalid
+			}
+			if !sameEntry(fd, name, &st) || unix.Unlinkat(fd, name, flags) != nil {
+				return errInvalid
+			}
+		}
+		if e == io.EOF {
+			return nil
+		}
+	}
 }
 func brewLayout(prefix, cellar, repository string) error {
 	for _, p := range []string{prefix, cellar, repository} {

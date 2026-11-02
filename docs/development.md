@@ -78,6 +78,13 @@ same remaining allowance, including Brew cleanup, Go cache removal and final roo
 removal. The 44-second orchestration allowance reserves a second for clock/scheduling
 granularity under the 45-second design bound. Uncertain or over-budget cleanup fails;
 no timeout can promise to interrupt an unkillable kernel/filesystem operation.
+The explicit success path checks the cleanup result before reporting success. Owned
+artifact deletion uses pinned directory descriptors and verifies owner/device/inode;
+it grants owner access only to those directories when read-only build/cache modes
+prevent removal. It never chmods regular files or follows link targets, and refuses
+hardlinked files, special files, ownership changes or bounded-traversal exhaustion.
+The final removal phase shares the same aggregate deadline; any failure retains a
+nonzero result and cannot become a successful installation report.
 Bootstrap failure/cancellation tests invoke the same supervisor/fallback path as CI
 with synthetic compiler children before helper readiness. Shared phase tests use
 `/bin/bash`, including its Bash 3.2 nounset behavior, with and without the optional

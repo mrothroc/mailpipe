@@ -208,3 +208,138 @@ func fixtureGit(args ...string) *exec.Cmd {
 	c.Env = cleanEnv(map[string]string{"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"})
 	return c
 }
+
+// Homebrew gives Go a package-manager GOPATH below its cache. Extracted
+// modules contain read-only directories, unlike the empty lifecycle fixtures.
+func TestOwnedCandidateReadonlyArtifacts(t *testing.T) {
+	parent := temp(t)
+	root := filepath.Join(parent, "mailpipe-candidate.fixture")
+	if e := os.Mkdir(root, 0700); e != nil {
+		t.Fatal(e)
+	}
+	identity, e := runTool(t, "owned-root", "--root", root)
+	if e != nil {
+		t.Fatalf("owner registration: %v %s", e, identity)
+	}
+	module := filepath.Join(root, "cache/go_mod_cache/pkg/mod/example.org/fixture")
+	if e = os.MkdirAll(filepath.Join(module, "nested"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(module, "nested/example.txt"), []byte("invented example.org"), 0444); e != nil {
+		t.Fatal(e)
+	}
+	outside := filepath.Join(parent, "outside")
+	if e = os.WriteFile(outside, []byte("untouched example.net"), 0400); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.Symlink(outside, filepath.Join(module, "outside-link")); e != nil {
+		t.Fatal(e)
+	}
+	directories := []string{filepath.Join(module, "nested"), module, filepath.Dir(module)}
+	t.Cleanup(func() {
+		for i := len(directories) - 1; i >= 0; i-- {
+			_ = os.Chmod(directories[i], 0700)
+		}
+	})
+	for _, path := range directories {
+		if e = os.Chmod(path, 0555); e != nil {
+			t.Fatal(e)
+		}
+	}
+	b, e := runTool(t, "remove-owned", "--root", root, "--identity", strings.TrimSpace(string(identity)))
+	if e != nil {
+		t.Fatalf("owned read-only build/cache artifacts not removed: %v %s", e, b)
+	}
+	if _, e = os.Lstat(root); !os.IsNotExist(e) {
+		t.Fatal("owned root remains")
+	}
+	if b, e = os.ReadFile(outside); e != nil || string(b) != "untouched example.net" {
+		t.Fatal("outside link target damaged")
+	}
+	if st, e := os.Stat(outside); e != nil || st.Mode().Perm() != 0400 {
+		t.Fatal("outside link target mode changed")
+	}
+}
+
+func TestOwnedCandidateCleanupBoundaries(t *testing.T) {
+	for _, kind := range []string{"identity", "marker-hardlink", "marker-mode", "marker-replacement", "root-replacement", "descendant-hardlink", "special-file", "depth-limit"} {
+		t.Run(kind, func(t *testing.T) {
+			parent := temp(t)
+			root := filepath.Join(parent, "mailpipe-candidate.fixture")
+			if e := os.Mkdir(root, 0700); e != nil {
+				t.Fatal(e)
+			}
+			b, e := runTool(t, "owned-root", "--root", root)
+			if e != nil {
+				t.Fatalf("register: %v %s", e, b)
+			}
+			identity := strings.TrimSpace(string(b))
+			outside := filepath.Join(parent, "outside")
+			if e = os.Mkdir(outside, 0700); e != nil {
+				t.Fatal(e)
+			}
+			sentinel := filepath.Join(outside, "example.txt")
+			if e = os.WriteFile(sentinel, []byte("untouched example.org"), 0400); e != nil {
+				t.Fatal(e)
+			}
+			switch kind {
+			case "identity":
+				identity += "invalid"
+			case "marker-hardlink":
+				e = os.Link(filepath.Join(root, ".owner"), filepath.Join(outside, "marker"))
+			case "marker-mode":
+				e = os.Chmod(filepath.Join(root, ".owner"), 0644)
+			case "marker-replacement":
+				privateTestHook = func() {
+					privateTestHook = nil
+					if e := os.Rename(filepath.Join(root, ".owner"), filepath.Join(root, ".previous-owner")); e != nil {
+						t.Fatal(e)
+					}
+					if e := os.WriteFile(filepath.Join(root, ".owner"), []byte(identity), 0600); e != nil {
+						t.Fatal(e)
+					}
+				}
+			case "root-replacement":
+				privateTestHook = func() {
+					privateTestHook = nil
+					if e := os.Rename(root, root+"-moved"); e != nil {
+						t.Fatal(e)
+					}
+					if e := os.Symlink(outside, root); e != nil {
+						t.Fatal(e)
+					}
+				}
+			case "descendant-hardlink":
+				e = os.Link(sentinel, filepath.Join(root, "linked"))
+			case "special-file":
+				e = syscall.Mkfifo(filepath.Join(root, "fifo"), 0600)
+			case "depth-limit":
+				path := root
+				for i := 0; i < 130; i++ {
+					path = filepath.Join(path, "d")
+					if e = os.Mkdir(path, 0700); e != nil {
+						t.Fatal(e)
+					}
+				}
+			}
+			if e != nil {
+				t.Fatal(e)
+			}
+			t.Cleanup(func() { privateTestHook = nil })
+			if e = ownedRoot("remove-owned", root, identity); e == nil {
+				t.Fatal("uncertain artifact ownership accepted")
+			}
+			if b, e = os.ReadFile(sentinel); e != nil || string(b) != "untouched example.org" {
+				t.Fatal("unrelated namespace damaged")
+			}
+			if st, e := os.Stat(sentinel); e != nil || st.Mode().Perm() != 0400 {
+				t.Fatal("unrelated mode changed")
+			}
+			if kind == "root-replacement" {
+				if st, e := os.Lstat(root); e != nil || st.Mode()&os.ModeSymlink == 0 {
+					t.Fatal("replacement namespace removed")
+				}
+			}
+		})
+	}
+}

@@ -313,6 +313,50 @@ func TestCandidateFormulaOptionalObserver(t *testing.T) {
 	}
 }
 
+func TestCandidateFormulaExplicitCleanup(t *testing.T) {
+	for _, mode := range []string{"explicit-cleanup-success", "explicit-cleanup-failure", "phase-and-cleanup-failure", "original-cleanup-failure", "signal-cleanup-failure"} {
+		t.Run(mode, func(t *testing.T) {
+			r := startShell(t, mode)
+			o := r.observe(t, "ready")
+			if mode == "signal-cleanup-failure" {
+				r.observe(t, "phase")
+				if e := r.cmd.Process.Signal(syscall.SIGTERM); e != nil {
+					t.Fatal(e)
+				}
+			}
+			wantOK := mode == "explicit-cleanup-success"
+			r.finish(t, wantOK)
+			last := r.lastObservation(o)
+			if mode == "explicit-cleanup-failure" {
+				if _, e := os.Stat(last.Root); e != nil {
+					t.Fatal("uncertain root was removed")
+				}
+				// Production conservatively retains an unacknowledged root. The
+				// test driver owns the fixture and removes it after checking teardown.
+				last.Root = ""
+			}
+			assertGone(t, last)
+			output := r.output.String()
+			if strings.Count(output, "cleanup_elapsed_seconds=") != 1 {
+				t.Fatalf("cleanup authority repeated: %s", output)
+			}
+			if strings.Contains(output, "synthetic candidate installation and owned cleanup passed") != wantOK {
+				t.Fatalf("unverified cleanup success: %s", output)
+			}
+			wantExit := 1
+			if mode == "original-cleanup-failure" {
+				wantExit = 7
+			}
+			if mode == "signal-cleanup-failure" {
+				wantExit = 143
+			}
+			if !wantOK && (!strings.Contains(output, "cleanup failed; evidence incomplete") || r.cmd.ProcessState.ExitCode() != wantExit) {
+				t.Fatalf("failure lost: %s", output)
+			}
+		})
+	}
+}
+
 func TestCandidateFormulaServerLifecycle(t *testing.T) {
 	t.Run("parallel-held-ports", func(t *testing.T) {
 		a := startShell(t, "hold")

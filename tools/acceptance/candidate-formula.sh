@@ -52,14 +52,14 @@ cleanup() {
   fi
   if [ "$ci" -eq 1 ] && [ -n "$root_identity" ] && [ -d "$root/gomodcache" ]; then cleanup_step 2 5 1 go clean -modcache || failed=1; fi
   if [ -n "$root" ] && [ -n "$root_identity" ] && [ -x "$helper" ]; then
-    cleanup_step 2 0 1 "$helper" remove-owned --root "$root" --identity "$root_identity" || failed=1
+    cleanup_step 8 0 1 "$helper" remove-owned --root "$root" --identity "$root_identity" || failed=1
   elif [ -n "$root" ]; then
     # Bootstrap has no helper yet. Delete only the fresh, identity-checked private child.
     if [ -n "$bootstrap_identity" ] && [ -O "$root" ] && [ ! -L "$root" ] && [ "$(stat -f '%d:%i' "$root")" = "$bootstrap_identity" ]; then
       case "$root" in "$parent"/mailpipe-candidate.*) /bin/rm -rf -- "$root" || failed=1;; *) failed=1;; esac
     else failed=1; fi
   fi
-  [ "$mode" != cleanup-failure ] || failed=1
+  case "$mode" in cleanup-failure|phase-and-cleanup-failure|original-cleanup-failure|signal-cleanup-failure) failed=1;; esac
   if [ "$ci" -eq 1 ] && [ "$archive_started" -ge 0 ] && [ "$archive_done" -eq 0 ]; then record_phase archive-readiness "$archive_started" fail || failed=1; archive_done=1; fi
   if [ "$ci" -eq 1 ] && [ "$archive_started" -ge 0 ]; then
     if [ "$failed" -eq 0 ]; then record_phase cleanup "$cleanup_started" pass || failed=1; else record_phase cleanup "$cleanup_started" fail || true; fi
@@ -69,6 +69,16 @@ cleanup() {
   cleaned=1 cleaning=0
   if [ "$failed" -ne 0 ]; then echo '[candidate-formula] cleanup failed; evidence incomplete' >&2; [ "$original" -ne 0 ] || original=1; fi
   return "$original"
+}
+# Shared by real CI and no-Brew lifecycle success-path tests.
+finish_success() {
+  local cleanup_status=0
+  cleanup || cleanup_status=$?
+  [ "$cleanup_status" -eq 0 ] || exit "$cleanup_status"
+  if [ "$ci" -eq 1 ]; then
+    [ ! -e "$cellar/mailpipe" ] && [ ! -e "$prefix/opt/mailpipe" ] && [ ! -e "$tap_path" ] || { echo '[candidate-formula] owned Brew resources remain' >&2; exit 1; }
+  fi
+  printf '[candidate-formula] synthetic candidate installation and owned cleanup passed\n'
 }
 trap 'status=$?; cleanup_status=0; cleanup || cleanup_status=$?; trap - EXIT; if [ "$status" -ne 0 ]; then exit "$status"; else exit "$cleanup_status"; fi' EXIT
 caught() { pending_signal=$1; if [ "$launching" -eq 0 ]; then exit "$pending_signal"; fi; }
@@ -104,7 +114,7 @@ if [ "$ci" -eq 1 ]; then
   brew_bin=$(command -v brew)
 else
   [ -n "$mode" ] && [ -n "$test_helper" ] && [ -n "$parent" ] && [ -n "$observer" ] || refuse
-  case "$mode" in success|hold|startup-hold|install-failure|phase-timeout|readiness-timeout|server-failure|cleanup-failure|repeated-cleanup|archive-corruption|cleanup-budget|bootstrap-failure|bootstrap-hold|no-observer-success|no-observer-failure|no-observer-hold) ;; *) refuse;; esac
+  case "$mode" in success|hold|startup-hold|install-failure|phase-timeout|readiness-timeout|server-failure|cleanup-failure|repeated-cleanup|archive-corruption|cleanup-budget|bootstrap-failure|bootstrap-hold|no-observer-success|no-observer-failure|no-observer-hold|explicit-cleanup-success|explicit-cleanup-failure|phase-and-cleanup-failure|original-cleanup-failure|signal-cleanup-failure) ;; *) refuse;; esac
   candidate=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 fi
 [ -d "$parent" ] && [ -O "$parent" ] && [ ! -L "$parent" ] || refuse
@@ -217,12 +227,17 @@ observe ready
 if [ "$ci" -eq 0 ]; then
   mkdir "$root/tap" "$root/trust" "$root/keg"
   case "$mode" in
-    install-failure|no-observer-failure) phase install 2s /usr/bin/false;;
+    install-failure|no-observer-failure|phase-and-cleanup-failure) phase install 2s /usr/bin/false;;
     phase-timeout) phase install 100ms /bin/sleep 25;;
-    hold) phase install 30s /bin/sleep 25;;
+    hold|signal-cleanup-failure) phase install 30s /bin/sleep 25;;
     no-observer-hold) phase install 30s /bin/bash -c 'printf "%s" "$$" > "$1"; exec /bin/sleep 25' fixture "$root/fixture-child";;
     repeated-cleanup) cleanup; cleanup;;
     *) phase install 2s /usr/bin/true;;
+  esac
+  case "$mode" in
+    explicit-cleanup-failure) printf 'changed marker' > "$root/.owner"; finish_success;;
+    explicit-cleanup-success) finish_success;;
+    original-cleanup-failure) exit 7;;
   esac
   exit 0
 fi
@@ -256,7 +271,5 @@ phase formula-test 1m "$brew_bin" test "$formula"
 installed_prefix=$(brew_read --prefix "$formula")
 "$helper" installed-location --prefix "$installed_prefix" --cellar "$cellar"
 phase installed-smoke 30s "$helper" installed-smoke --binary "$installed_prefix/bin/mailpipe" --examples "$installed_prefix/share/mailpipe/examples" --root "$root/installed-smoke"
-# EXIT is the single cleanup authority; success is printed only after cleanup succeeded.
-cleanup
-[ ! -e "$cellar/mailpipe" ] && [ ! -e "$prefix/opt/mailpipe" ] && [ ! -e "$tap_path" ] || { echo '[candidate-formula] owned Brew resources remain' >&2; exit 1; }
-printf '[candidate-formula] synthetic candidate installation and owned cleanup passed\n'
+# Explicit successful completion uses the same teardown gate as lifecycle tests.
+finish_success
