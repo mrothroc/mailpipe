@@ -27,11 +27,7 @@ func (d *FileDoc) OfflineHTML(ctx context.Context) (page string, err error) {
 		}
 	}()
 	write := func(v string) error { _, e := io.WriteString(b, v); return e }
-	date := ""
-	if !d.Date.IsZero() {
-		date = d.Date.Format("2006-01-02 15:04 MST")
-	}
-	if e = write(`<!doctype html><html><head><meta charset="utf-8">` + blankBase + `</head><body><div><b>From:</b> ` + html.EscapeString(d.From) + `<br><b>Date:</b> ` + html.EscapeString(date) + `<br><b>Subject:</b> ` + html.EscapeString(d.Subject) + `</div>`); e != nil {
+	if e = write(`<!doctype html><html><head><meta charset="utf-8">` + blankBase + `</head><body>` + sourceHeader(d.From, d.Subject, d.Date)); e != nil {
 		return "", e
 	}
 	for _, f := range d.body.render {
@@ -40,7 +36,7 @@ func (d *FileDoc) OfflineHTML(ctx context.Context) (page string, err error) {
 			return "", e
 		}
 		if !f.html {
-			e = write("<pre>")
+			e = write(plainTextStart)
 			buffer := make([]byte, 32768)
 			for e == nil {
 				n, re := r.Read(buffer)
@@ -106,7 +102,7 @@ func (d *FileDoc) offlineTokens(ctx context.Context, r io.Reader, w io.Writer) e
 						continue
 					}
 					if strings.HasPrefix(strings.ToLower(a.Val), "cid:") {
-						id := strings.TrimPrefix(a.Val, "cid:")
+						id := a.Val[len("cid:"):]
 						if decoded, e := url.PathUnescape(id); e == nil {
 							id = decoded
 						}
@@ -133,7 +129,20 @@ func (d *FileDoc) offlineTokens(ctx context.Context, r io.Reader, w io.Writer) e
 						if e != nil {
 							return e
 						}
-						if _, e = io.WriteString(w, `">`); e != nil {
+						if _, e = io.WriteString(w, `"`); e != nil {
+							return e
+						}
+						// Keep presentation hints without materializing the encoded
+						// image. Chrome.PDF remains the sanitization boundary.
+						for _, hint := range token.Attr {
+							switch hint.Key {
+							case "alt", "title", "width", "height", "style", "class":
+								if _, e = io.WriteString(w, " "+hint.Key+`="`+html.EscapeString(hint.Val)+`"`); e != nil {
+									return e
+								}
+							}
+						}
+						if _, e = io.WriteString(w, ">"); e != nil {
 							return e
 						}
 						token.Type = nethtml.CommentToken

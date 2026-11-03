@@ -43,11 +43,12 @@ jobs:
       - name: Install PDF inspection tools
         run: brew install poppler
 
-      - name: Require browser security test dependencies
+      - name: Require browser and PDF inspection dependencies
         run: |
-          test -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          test -x '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' || { echo 'Install executable Google Chrome to run required rendering verification.' >&2; exit 1; }
           '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' --version
-          command -v pdftotext
+          command -v pdftotext || { echo 'Install Poppler (brew install poppler) for required PDF text inspection.' >&2; exit 1; }
+          command -v pdftoppm || { echo 'Install Poppler (brew install poppler) for required PDF raster inspection.' >&2; exit 1; }
 
       - name: Install pinned security tools
         run: make install-security-tools

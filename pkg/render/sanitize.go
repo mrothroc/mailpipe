@@ -12,8 +12,8 @@ import (
 
 // Browser flags are not a security boundary: sanitise the parsed document and
 // put the resource policy before any untrusted markup. Only static email
-// presentation is retained. CSS is preserved, but its resource loads are
-// constrained by CSP independently of how CSS URLs are spelled or escaped.
+// presentation is retained. CSS other than source page rules is preserved, but
+// its resource loads are constrained by CSP independently of URL spelling.
 const resourcePolicy = "default-src 'none'; script-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; frame-src 'none'; object-src 'none'; connect-src 'none'; form-action 'none'; base-uri about:"
 
 func safeHTML(page string) (string, error) {
@@ -51,12 +51,27 @@ func safeHTML(page string) (string, error) {
 			out := &html.Node{Type: html.ElementNode, Data: n.Data, DataAtom: n.DataAtom}
 			out.Attr = safeAttributes(n)
 			parent.AppendChild(out)
+			if n.Data == "style" {
+				var css strings.Builder
+				for child := n.FirstChild; child != nil; child = child.NextSibling {
+					if child.Type == html.TextNode {
+						css.WriteString(child.Data)
+					}
+				}
+				out.AppendChild(&html.Node{Type: html.TextNode, Data: withoutSourcePages(css.String())})
+				return
+			}
 			for child := n.FirstChild; child != nil; child = child.NextSibling {
 				copyNode(child, out)
 			}
 		}
 	}
 	copyNode(root, body)
+	fitImages(body)
+	// Last in source order, after source styles, with the CSP still first.
+	style := &html.Node{Type: html.ElementNode, Data: "style"}
+	style.AppendChild(&html.Node{Type: html.TextNode, Data: printStyle})
+	body.AppendChild(style)
 	var out bytes.Buffer
 	out.WriteString(`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="` + resourcePolicy + `"><base href="about:blank"></head>`)
 	if err := html.Render(&out, body); err != nil {

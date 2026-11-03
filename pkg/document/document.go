@@ -87,16 +87,10 @@ var (
 // date, subject), then its HTML body (or its text, escaped), with inline
 // images embedded as data URIs and every remote resource removed.
 func (d Doc) OfflineHTML() string {
-	date := ""
-	if !d.Date.IsZero() {
-		date = d.Date.Format("2006-01-02 15:04 MST")
-	}
-	head := fmt.Sprintf(`<div style="font:12px sans-serif;border-bottom:1px solid #999;margin:0 0 12px;padding:0 0 6px">`+
-		`<b>From:</b> %s<br><b>Date:</b> %s<br><b>Subject:</b> %s</div>`,
-		html.EscapeString(d.From), html.EscapeString(date), html.EscapeString(d.Subject))
+	head := sourceHeader(d.From, d.Subject, d.Date)
 	if d.HTML == "" {
 		return `<!doctype html><html><head><meta charset="utf-8">` + blankBase + `</head><body>` + head +
-			`<pre style="white-space:pre-wrap;font:13px monospace">` + html.EscapeString(d.Text) + `</pre></body></html>`
+			plainTextStart + html.EscapeString(d.Text) + `</pre></body></html>`
 	}
 	h := remoteLink.ReplaceAllString(baseTag.ReplaceAllString(d.HTML, ""), "")
 	h = remoteImport.ReplaceAllString(h, "")
@@ -130,3 +124,15 @@ func (d Doc) OfflineHTML() string {
 // resolve against the page's temporary file, whose random path then appears
 // in the PDF: renders would differ, and a local path would leak.
 const blankBase = `<base href="about:blank">`
+
+const plainTextStart = `<pre style="white-space:pre-wrap;font:13px monospace">`
+
+func sourceHeader(from, subject string, date time.Time) string {
+	formatted := ""
+	if !date.IsZero() {
+		formatted = date.Format("2006-01-02 15:04 MST")
+	}
+	return fmt.Sprintf(`<div style="font:12px sans-serif;border-bottom:1px solid #999;margin:0 0 12px;padding:0 0 6px;overflow-wrap:anywhere">`+
+		`<b>From:</b> %s<br><b>Date:</b> %s<br><b>Subject:</b> %s</div>`,
+		html.EscapeString(from), html.EscapeString(formatted), html.EscapeString(subject))
+}

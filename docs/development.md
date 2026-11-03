@@ -23,7 +23,7 @@ Tool versions are pinned in `Makefile`. The pinned Gitleaks CLI uses the `git --
 
 ## GitHub Actions
 
-The [CI workflow](../.github/workflows/ci.yml) runs `make check` on pushes to `main`, pull requests, every Monday at 11:23 UTC, and manual dispatch. It uses a standard `macos-15` runner, installs Poppler, and requires the installed Chrome binary and `pdftotext` before running tests, so browser security tests cannot silently skip because their dependencies are missing.
+The [CI workflow](../.github/workflows/ci.yml) runs `make check` on pushes to `main`, pull requests, every Monday at 11:23 UTC, and manual dispatch. It uses a standard `macos-15` runner, installs Poppler, and explicitly checks executable Chrome, its version, `pdftotext` and `pdftoppm` before running tests. `make test` and `make check` set `MAILPIPE_REQUIRE_RENDER_TESTS=1`: missing or unusable browser/PDF inspection dependencies fail with installation guidance, and required rendering verification cannot skip.
 
 CI uses the latest stable Go compiler; the release gate still checks that both that compiler and the module's minimum Go family are supported. Newly disclosed dependency vulnerabilities or an unsupported minimum Go version therefore fail the weekly run even without a source change. Scheduled runs use the default branch, can be delayed, and GitHub automatically disables schedules in public repositories after 60 days without repository activity; re-enable the workflow in Actions if that happens. See [GitHub's schedule documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
@@ -31,7 +31,7 @@ The workflow has read-only repository permissions, SHA-pinned official actions, 
 
 ## Publication boundary
 
-The renderer security tests use invented HTML and temporary canary files. When Chrome and Poppler's `pdftotext` are installed, the test suite also checks the resulting PDF for script execution and local-file inclusion using the actual browser. That integration test skips when either optional tool is unavailable; the sanitizer unit tests always run. Browser flags alone do not enforce the rendering boundary: parsed HTML sanitization and an early Content Security Policy do.
+The renderer security tests use invented HTML and temporary canary files. Release verification runs actual headless Chrome and Poppler to check script/local-file isolation and complete inline-image filing. Synthetic portrait, landscape and multiple-image PDFs are rasterized with `pdftoppm`; assertions check every image edge, aspect ratio, printable bounds, pagination and visible source headers. Negative dependency tests prove required verification fails when tools are absent. The older standalone renderer tests remain optional outside required mode; the complete-image filing tests require their dependencies in every run. Install Google Chrome and Poppler (`brew install poppler`) before running them. Browser flags alone do not enforce the rendering boundary: parsed HTML sanitization and an early Content Security Policy do.
 
 These checks complement the example-domain privacy guard; a clean secret scan does not establish the absence of personal preferences or identifying prose. Keep personal classifiers, configuration, mail, reports and operational notes outside the repository. Before publication, scan the final source snapshot and review repository history and any external artifacts separately.
 

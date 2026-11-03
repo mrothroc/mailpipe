@@ -88,10 +88,7 @@ func TestPDFFailsOnAFailedRunOrAnythingButAPDF(t *testing.T) {
 
 // TestRealChromeRendersAPDF runs the installed Chrome, when there is one.
 func TestRealChromeRendersAPDF(t *testing.T) {
-	path := render.FindChrome()
-	if path == "" {
-		t.Skip("no Chrome installed")
-	}
+	path, _ := browserDependencies(t, false)
 	got, err := render.Chrome{Path: path}.PDF(context.Background(), `<!doctype html><meta charset="utf-8"><p>Receipt — $12.00</p><img src="https://example.invalid/pixel.gif">`)
 	if err != nil || !bytes.HasPrefix(got, []byte("%PDF-")) {
 		t.Fatalf("PDF %d bytes, %v", len(got), err)
@@ -122,10 +119,7 @@ func TestThePageURLIsEscaped(t *testing.T) {
 // Two renders of a page with in-page links are the same document, apart
 // from their creation times.
 func TestRealChromeRendersAreRepeatable(t *testing.T) {
-	path := render.FindChrome()
-	if path == "" {
-		t.Skip("no Chrome installed")
-	}
+	path, _ := browserDependencies(t, false)
 	page := `<!doctype html><html><head><base href="about:blank"></head><body><a href="#total">Total</a><p id="total">$12</p></body></html>`
 	a, errA := render.Chrome{Path: path}.PDF(context.Background(), page)
 	b, errB := render.Chrome{Path: path}.PDF(context.Background(), page)
