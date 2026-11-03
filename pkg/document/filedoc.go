@@ -25,6 +25,7 @@ type FileDoc struct {
 	MessageID, From, Subject string
 	Date                     time.Time
 	Attachments              []FilePart
+	Parts                    []InspectablePart // populated only by ParsePartsReader
 	Inline                   map[string]FilePart
 	scope                    *Scope
 	files                    []*Blob
