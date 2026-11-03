@@ -37,24 +37,17 @@ func TestPDFPreservesStaticEmailPresentation(t *testing.T) {
 	if _, err := (render.Chrome{Path: "/chrome", Runner: f}).PDF(context.Background(), page); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`<style>p {color:blue}</style>`, `<body style="font-family:serif" bgcolor="#eeeeee">`, `<main><article><header>Header</header><section>`, `<figcaption>Caption</figcaption>`, `<time>Today</time>`, `<mark>Highlighted</mark>`, `<footer>Footer</footer>`, `src="data:image/jpg;base64,aW1hZ2U="`, `<table>`, `colspan="2"`, `style="font-weight:bold"`, `Receipt &amp; notes`, `src="data:image/png;base64,aW1hZ2U="`, `href="https://example.com/receipt"`, `href="mailto:billing@example.com"`} {
+	for _, want := range []string{`<style>p {color:blue}</style>`, `<body style="font-family:serif" bgcolor="#eeeeee">`, `<main><article><header>Header</header><section>`, `<figcaption>Caption</figcaption>`, `<time>Today</time>`, `<mark>Highlighted</mark>`, `<footer>Footer</footer>`, `src="data:image/jpg;base64,aW1hZ2U="`, `<table `, `colspan="2"`, `style="font-weight:bold"`, `Receipt &amp; notes`, `src="data:image/png;base64,aW1hZ2U="`, `href="https://example.com/receipt"`, `href="mailto:billing@example.com"`} {
 		if !strings.Contains(f.page, want) {
 			t.Errorf("static presentation lost: %s", want)
 		}
 	}
 }
 
-// This optional integration test checks actual browser behaviour rather than
+// This integration test checks actual browser behaviour rather than
 // trusting the presence of browser command-line flags. All content is invented.
 func TestRealChromeCannotExecuteMailScriptsOrIncludeLocalFiles(t *testing.T) {
-	chrome := render.FindChrome()
-	if chrome == "" {
-		t.Skip("no Chrome installed")
-	}
-	textTool, err := exec.LookPath("pdftotext")
-	if err != nil {
-		t.Skip("optional pdftotext integration helper not installed")
-	}
+	chrome, textTool := browserDependencies(t, true)
 	dir := t.TempDir()
 	local := filepath.Join(dir, "fixture.html")
 	const localMarker = "CANARY_LOCAL"

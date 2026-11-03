@@ -57,6 +57,11 @@ func safeHTML(page string) (string, error) {
 		}
 	}
 	copyNode(root, body)
+	fitImages(body)
+	// Last in source order, after source styles, with the CSP still first.
+	style := &html.Node{Type: html.ElementNode, Data: "style"}
+	style.AppendChild(&html.Node{Type: html.TextNode, Data: printStyle})
+	body.AppendChild(style)
 	var out bytes.Buffer
 	out.WriteString(`<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="` + resourcePolicy + `"><base href="about:blank"></head>`)
 	if err := html.Render(&out, body); err != nil {
