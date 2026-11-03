@@ -158,6 +158,5 @@ func blockStandaloneImageRuns(n *html.Node) {
 				}
 			}
 		}
-		previous = first
 	}
 }
