@@ -33,6 +33,16 @@ The workflow has read-only repository permissions, SHA-pinned official actions, 
 
 The renderer security tests use invented HTML and temporary canary files. Release verification runs actual headless Chrome and Poppler to check script/local-file isolation and complete inline-image filing. Synthetic portrait, landscape and multiple-image PDFs are rasterized with `pdftoppm`; assertions check every image edge, aspect ratio, printable bounds, pagination and visible source headers. Negative dependency tests prove required verification fails when tools are absent. The older standalone renderer tests remain optional outside required mode; the complete-image filing tests require their dependencies in every run. Install Google Chrome and Poppler (`brew install poppler`) before running them. Browser flags alone do not enforce the rendering boundary: parsed HTML sanitization and an early Content Security Policy do.
 
+The attachment acceptance test drives the one-off workflow end to end on the
+Microsoft 365 path: it lists a synthetic message's inline image, extracts the
+exact decoded bytes, files the message through a hand-written manifest with no
+template, and raster-inspects the saved PDF to prove the whole image is present.
+It also checks that raw extraction leaves the filing verdict and mail state
+untouched and that an unauthorized `save` writes nothing. A companion case runs
+the same list-and-extract path through the read-only IMAP adapter and confirms
+`save --execute` is still refused there. These cases run in required mode with
+the same Chrome and Poppler dependency as the other renderer verification.
+
 These checks complement the example-domain privacy guard; a clean secret scan does not establish the absence of personal preferences or identifying prose. Keep personal classifiers, configuration, mail, reports and operational notes outside the repository. Before publication, scan the final source snapshot and review repository history and any external artifacts separately.
 
 ## Generated documentation

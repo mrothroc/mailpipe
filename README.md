@@ -101,7 +101,7 @@ The last command checks the proposed moves without performing them. After review
 
 Use a time window covering mail since the last scan, and explicit cost caps for paid stages. Review classifications and plans: models can make mistakes or be influenced by malicious message content. Classifiers and hook output cannot authorize execution.
 
-The complete workflow, including filing and recovery, is in [operations.md](docs/operations.md). Commands and flags are documented by `mailpipe --help` and `mailpipe <command> --help`.
+The complete workflow, including filing and recovery, is in [operations.md](docs/operations.md). To inspect or extract a message's MIME files, or to file a one-off record without templates, see [attachments.md](docs/attachments.md) and [filing.md](docs/filing.md). Commands and flags are documented by `mailpipe --help` and `mailpipe <command> --help`.
 
 ## Data and customization
 
