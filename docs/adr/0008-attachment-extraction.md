@@ -61,7 +61,12 @@ verifies size/hash/inode/readback, then closes content and owned provider/store
 resources before final no-replacement linking. Output staging has a separate
 finite aggregate decoded-byte cap. Rooted I/O and 32 KiB copying preserve the
 existing filesystem pattern while avoiding filing's collision equivalence and
-verdict effects. Unsupported ownership/platform evidence fails closed. POSIX
+verdict effects. Follow the filing writers' final-linked-output readback through
+the pinned directory; extraction additionally retains a stage descriptor and
+validates final regular-file type, 0600 mode, owner, inode, size and decoded digest.
+Repeat destination verification after temporary cleanup and directory sync,
+including earlier outputs on a failed batch. Unsupported ownership/platform
+evidence fails closed. POSIX
 tests exercise real descriptor pinning, symlink confinement and directory sync;
 the supported macOS release gate runs those operations directly.
 
@@ -70,6 +75,15 @@ failure reports complete earlier files as `published` and fails the operation.
 Cleanup errors remain nonzero; no incomplete output is successful and no unrelated
 file is removed as rollback. Private namespace/same-UID and crash-recovery limits
 remain those of ADR0005. Never implicitly open or execute extracted content.
+
+Missing or changed destinations report `failed` with an empty `saved_path` and an
+inspection hint for `planned_path`. Only verified complete destinations report
+`published` on a nonzero outcome. Preserve unknown replacement entries instead of
+adopting or removing them as owned temporary files. The checks are finite
+observations, not exclusion of another same-user process: cleanup has no atomic
+compare-and-unlink primitive, and changes after the last validation remain
+possible. Retain the stable-private-namespace requirement while detecting modeled
+substitutions before accepting publication success.
 
 Structured rows and safe errors retain shared TSV/JSON stdout, stderr hints and
 footer, exit codes 0/1/2/3/4 and private metadata overflow. Explicit `unsafe_path`

@@ -206,7 +206,7 @@ func TestAttachmentLateCancellationAndCleanupFault(t *testing.T) {
 				t.Fatal(code, err)
 			}
 			if fault == "between-links" && (rows[0].Status != "published" || rows[1].Status != "failed") {
-				t.Fatal(rows)
+				t.Fatalf("cancellation results: %+v %+v", rows[0], rows[1])
 			}
 			entries, e := os.ReadDir(r.path)
 			if e != nil {
@@ -438,6 +438,228 @@ func TestAttachmentPublicationWaitsForCleanupAndReportsLateCollision(t *testing.
 				if strings.HasPrefix(entry.Name(), ".mailpipe-") {
 					t.Fatal("stage leaked")
 				}
+			}
+		})
+	}
+}
+
+func TestAttachmentPublicationRejectsStageSymlinkSubstitution(t *testing.T) {
+	s, rows := extractionTestRows(t)
+	rows = rows[:1]
+	r := privateAttachmentRoot(t)
+	const sentinel = "unrelated synthetic bytes"
+	if err := os.WriteFile(filepath.Join(r.path, "sentinel.bin"), []byte(sentinel), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := r.link
+	var replacedStage string
+	r.link = func(a, b string) error {
+		replacedStage = a
+		if err := r.root.Remove(a); err != nil {
+			return err
+		}
+		if err := r.root.Symlink("sentinel.bin", a); err != nil {
+			return err
+		}
+		return link(a, b)
+	}
+	err := extractAttachments(context.Background(), r, rows, true, document.DefaultLimits(), s.Close)
+	if err == nil || rows[0].Status == "saved" || rows[0].Status == "published" || rows[0].SavedPath != "" {
+		t.Fatalf("substitution claimed verified publication: err=%v row=%+v", err, rows[0])
+	}
+	for _, name := range []string{replacedStage, rows[0].OutputName} {
+		info, e := r.root.Lstat(name)
+		if e != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("unexpected replacement removed or misreported: %s %v %v", name, info, e)
+		}
+	}
+	b, e := os.ReadFile(filepath.Join(r.path, "sentinel.bin"))
+	if e != nil || string(b) != sentinel {
+		t.Fatal("unrelated sentinel changed", e)
+	}
+	code, _ := attachmentError(err)
+	formatted := attachmentFailureRows(1, rows, code)
+	if formatted[0].Status != "failed" || formatted[0].SavedPath != "" || !strings.Contains(formatted[0].Detail, "destination could not be verified") {
+		t.Fatalf("formatter claimed success: %+v", formatted[0])
+	}
+}
+
+func TestAttachmentFailedStageStatNeverAuthorizesReplacementCleanup(t *testing.T) {
+	s, rows := extractionTestRows(t)
+	r := privateAttachmentRoot(t)
+	if e := os.WriteFile(filepath.Join(r.path, "sentinel.bin"), []byte("unrelated sentinel"), 0600); e != nil {
+		t.Fatal(e)
+	}
+	open := r.stageOpen
+	var replacement string
+	r.stageOpen = func(name string) (attachmentFile, error) {
+		f, e := open(name)
+		if e != nil {
+			return nil, e
+		}
+		replacement = name
+		if e = r.root.Remove(name); e != nil {
+			f.Close()
+			return nil, e
+		}
+		if e = r.root.Symlink("sentinel.bin", name); e != nil {
+			f.Close()
+			return nil, e
+		}
+		return attachmentFaultFile{f, "stat"}, nil
+	}
+	err := extractAttachments(context.Background(), r, rows, true, document.DefaultLimits(), s.Close)
+	if err == nil || rows[0].Status == "saved" || rows[0].SavedPath != "" {
+		t.Fatal("failed Stat claimed publication", err, rows[0])
+	}
+	info, e := r.root.Lstat(replacement)
+	if e != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("unrelated replacement removed", e)
+	}
+	data, e := os.ReadFile(filepath.Join(r.path, "sentinel.bin"))
+	if e != nil || string(data) != "unrelated sentinel" {
+		t.Fatal("sentinel changed", e)
+	}
+	code, _ := attachmentError(err)
+	if code != "cleanup" {
+		t.Fatal("uncertain cleanup not surfaced", code, err)
+	}
+}
+
+func TestAttachmentPublicationArtifactIntegrityFaults(t *testing.T) {
+	for _, fault := range []string{"stage-regular-swap", "stage-bytes", "stage-bytes-preserved-time", "stage-mode", "destination-symlink", "destination-regular-swap", "destination-bytes-preserved-time", "destination-mode", "missing-link", "extra-alias", "earlier-output-change", "cleanup-output-change", "sync-output-change", "link-error-after-effect"} {
+		t.Run(fault, func(t *testing.T) {
+			s, rows := extractionTestRows(t)
+			r := privateAttachmentRoot(t)
+			if fault != "earlier-output-change" {
+				rows = rows[:1]
+			}
+			if e := os.WriteFile(filepath.Join(r.path, "sentinel.bin"), []byte("unrelated sentinel"), 0600); e != nil {
+				t.Fatal(e)
+			}
+			identities := make(map[string]os.FileInfo)
+			link := r.link
+			r.link = func(a, b string) error {
+				f, e := r.root.Open(a)
+				if e != nil {
+					return e
+				}
+				t.Cleanup(func() { f.Close() })
+				info, e := f.Stat()
+				if e != nil {
+					return e
+				}
+				identities[b] = info
+				switch fault {
+				case "stage-regular-swap":
+					if e = r.root.Remove(a); e != nil {
+						return e
+					}
+					if e = os.WriteFile(filepath.Join(r.path, a), []byte("exact\x00bytes"), 0600); e != nil {
+						return e
+					}
+				case "stage-bytes":
+					if e = os.WriteFile(filepath.Join(r.path, a), []byte("wrong\x00bytes"), 0600); e != nil {
+						return e
+					}
+				case "stage-bytes-preserved-time":
+					if e = os.WriteFile(filepath.Join(r.path, a), []byte("wrong\x00bytes"), 0600); e != nil {
+						return e
+					}
+					if e = os.Chtimes(filepath.Join(r.path, a), info.ModTime(), info.ModTime()); e != nil {
+						return e
+					}
+				case "stage-mode":
+					if e = os.Chmod(filepath.Join(r.path, a), 0644); e != nil {
+						return e
+					}
+				case "missing-link":
+					return nil
+				case "extra-alias":
+					if e = r.root.Link(a, "unexpected-alias.bin"); e != nil {
+						return e
+					}
+				case "earlier-output-change":
+					if b == rows[1].OutputName {
+						if e = os.WriteFile(filepath.Join(r.path, rows[0].OutputName), []byte("wrong\x00bytes"), 0600); e != nil {
+							return e
+						}
+					}
+				}
+				if e = link(a, b); e != nil {
+					return e
+				}
+				switch fault {
+				case "destination-symlink":
+					if e = r.root.Remove(b); e != nil {
+						return e
+					}
+					return r.root.Symlink("sentinel.bin", b)
+				case "destination-regular-swap":
+					if e = r.root.Remove(b); e != nil {
+						return e
+					}
+					return os.WriteFile(filepath.Join(r.path, b), []byte("exact\x00bytes"), 0600)
+				case "destination-mode":
+					return os.Chmod(filepath.Join(r.path, b), 0644)
+				case "destination-bytes-preserved-time":
+					if e = os.WriteFile(filepath.Join(r.path, b), []byte("wrong\x00bytes"), 0600); e != nil {
+						return e
+					}
+					return os.Chtimes(filepath.Join(r.path, b), info.ModTime(), info.ModTime())
+				case "link-error-after-effect":
+					return errors.New("link acknowledgement uncertain")
+				}
+				return nil
+			}
+			remove := r.remove
+			if fault == "cleanup-output-change" {
+				r.remove = func(name string) error {
+					e := remove(name)
+					if e != nil {
+						return e
+					}
+					return os.WriteFile(filepath.Join(r.path, rows[0].OutputName), []byte("wrong\x00bytes"), 0600)
+				}
+			}
+			sync := r.sync
+			if fault == "sync-output-change" {
+				r.sync = func() error {
+					if e := os.WriteFile(filepath.Join(r.path, rows[0].OutputName), []byte("wrong\x00bytes"), 0600); e != nil {
+						return e
+					}
+					return sync()
+				}
+			}
+			err := extractAttachments(context.Background(), r, rows, true, document.DefaultLimits(), s.Close)
+			if err == nil {
+				t.Fatal("publication integrity fault succeeded")
+			}
+			for _, row := range rows {
+				if row.Status == "saved" {
+					t.Fatalf("fault reported saved: %+v", row)
+				}
+				if row.Status == "published" || row.SavedPath != "" {
+					info, e := r.root.Lstat(row.OutputName)
+					if e != nil || !attachmentOwned(info, false) || !os.SameFile(identities[row.OutputName], info) {
+						t.Fatalf("unverified identity/mode reported published: %+v %v", row, e)
+					}
+					data, e := os.ReadFile(filepath.Join(r.path, row.OutputName))
+					h := sha256.Sum256(data)
+					if e != nil || hex.EncodeToString(h[:]) != row.SHA256 || int64(len(data)) != row.DecodedBytes {
+						t.Fatalf("unverified bytes reported published: %+v %v", row, e)
+					}
+				}
+			}
+			if fault == "link-error-after-effect" && rows[0].Status != "published" {
+				t.Fatalf("complete uncertain outcome not reported: %+v", rows[0])
+			}
+			if fault == "earlier-output-change" && (rows[0].SavedPath != "" || rows[1].Status != "published") {
+				t.Fatalf("partial integrity result: %+v %+v", rows[0], rows[1])
+			}
+			b, e := os.ReadFile(filepath.Join(r.path, "sentinel.bin"))
+			if e != nil || string(b) != "unrelated sentinel" {
+				t.Fatal("sentinel changed", e)
 			}
 		})
 	}

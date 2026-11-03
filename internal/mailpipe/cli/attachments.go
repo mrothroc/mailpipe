@@ -17,26 +17,27 @@ import (
 )
 
 type attachmentRow struct {
-	ProviderID   string `json:"provider_id"`
-	AccountID    string `json:"account_id"`
-	N            int64  `json:"n"`
-	Part         string `json:"part"`
-	MIMEPath     string `json:"mime_path"`
-	Kind         string `json:"kind"`
-	Filename     string `json:"filename"`
-	ContentType  string `json:"content_type"`
-	Disposition  string `json:"disposition"`
-	CID          string `json:"cid"`
-	DecodedBytes int64  `json:"decoded_bytes"`
-	SHA256       string `json:"sha256"`
-	OutputName   string `json:"output_name"`
-	Extractable  bool   `json:"extractable"`
-	Status       string `json:"status"`
-	ErrorCode    string `json:"error_code"`
-	Detail       string `json:"detail"`
-	SavedPath    string `json:"saved_path"`
-	PlannedPath  string `json:"planned_path"`
-	data         *document.Blob
+	ProviderID         string `json:"provider_id"`
+	AccountID          string `json:"account_id"`
+	N                  int64  `json:"n"`
+	Part               string `json:"part"`
+	MIMEPath           string `json:"mime_path"`
+	Kind               string `json:"kind"`
+	Filename           string `json:"filename"`
+	ContentType        string `json:"content_type"`
+	Disposition        string `json:"disposition"`
+	CID                string `json:"cid"`
+	DecodedBytes       int64  `json:"decoded_bytes"`
+	SHA256             string `json:"sha256"`
+	OutputName         string `json:"output_name"`
+	Extractable        bool   `json:"extractable"`
+	Status             string `json:"status"`
+	ErrorCode          string `json:"error_code"`
+	Detail             string `json:"detail"`
+	SavedPath          string `json:"saved_path"`
+	PlannedPath        string `json:"planned_path"`
+	data               *document.Blob
+	artifactUnverified bool
 }
 
 type attachmentFailure struct {
@@ -103,7 +104,14 @@ func attachmentFailureRows(n int64, rows []*attachmentRow, code string) []*attac
 	}
 	marked := false
 	for _, r := range rows {
-		if r.SavedPath != "" {
+		if r.artifactUnverified {
+			r.Status = "failed"
+			r.SavedPath = ""
+			if r.ErrorCode == "" {
+				r.ErrorCode = code
+			}
+			marked = true
+		} else if r.SavedPath != "" {
 			r.Status, r.ErrorCode, r.Detail = "published", code, "complete file published; operation failed"
 			marked = true
 		} else if r.Status != "not_saved" {

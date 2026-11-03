@@ -90,8 +90,13 @@ All selected files are first streamed into exclusive unpredictable private stage
 files under the pinned root, synced, closed and verified by bounded readback.
 Content spools and owned provider/store handles close before any final file is
 published. No incomplete file can be published as a successful extraction. Final
-publication uses no-replacement links. Normal failures and cancellation clean
-owned temporary files; cleanup failures are surfaced rather than reported as
+publication uses no-replacement links followed by final-file readback through the
+pinned root, as in the filing writers. Extraction also retains the verified stage
+inode and checks the destination's identity, user ownership, regular-file type,
+0600 mode, size and decoded digest. A bounded terminal check repeats those checks
+after cleanup and directory synchronization, including earlier files in a failed
+batch. Normal failures and cancellation clean identity-proven owned temporary
+files; cleanup failures are surfaced rather than reported as
 success. Crash leftovers need explicit operator inspection; there is no janitor
 that adopts directories based on their names.
 
@@ -101,6 +106,22 @@ files. The command exits nonzero and reports those rows as `published`, with
 `saved_path`, while failed/untouched selections report `failed`/`not_saved`.
 Inspect those results before retrying: occupied destinations still fail collision.
 No automatic overwrite or rollback of unrelated entries occurs.
+
+If a destination is missing, substituted, modified or cannot be verified, its row
+reports `failed`, leaves `saved_path` empty and directs inspection of
+`planned_path`. A failed link acknowledgement can still leave a complete file;
+only a destination verified against the retained stage identity and decoded digest
+can be reported as `published`. Unexpected replacement entries are preserved;
+cleanup removes a temporary name only after observing the created inode there.
+An ownership/identity proof failure remains an error and can require manual
+inspection of retained entries.
+
+These checks validate observations at publication and terminal readback. They do
+not lock out another process running as the same user, make a multi-file batch
+atomic, provide atomic compare-and-unlink, or prevent modification after the last
+check. A stable private namespace remains required. Cancellation stops further
+links; bounded five-second reconciliation reads may finish checking already
+attempted writes so uncertain artifacts are never presented as verified files.
 
 ## Output and errors
 

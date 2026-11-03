@@ -51,6 +51,7 @@ func attachmentName(p document.InspectablePart) (string, error) {
 
 type attachmentFile interface {
 	io.ReadWriteCloser
+	Fd() uintptr
 	Stat() (os.FileInfo, error)
 	Sync() error
 }
@@ -65,6 +66,14 @@ type attachmentRoot struct {
 	stageOpen func(string) (attachmentFile, error)
 	stageRead func(string) (io.ReadCloser, error)
 	sync      func() error
+}
+
+type attachmentArtifact struct {
+	name      string
+	info      os.FileInfo
+	pin       *os.File
+	attempted bool
+	linkErr   error
 }
 
 func attachmentOwned(info os.FileInfo, directory bool) bool {
@@ -153,11 +162,12 @@ func attachmentCopy(ctx context.Context, w io.Writer, r io.Reader, max int64) (i
 	}
 }
 
-func stageAttachment(ctx context.Context, r *attachmentRoot, name string, row *attachmentRow, max int64) (result error) {
+func stageAttachment(ctx context.Context, r *attachmentRoot, name string, row *attachmentRow, max int64, artifact *attachmentArtifact) (result error) {
 	f, e := r.stageOpen(name)
 	if e != nil {
 		return e
 	}
+	artifact.name = name
 	closed := false
 	defer func() {
 		if !closed {
@@ -166,7 +176,24 @@ func stageAttachment(ctx context.Context, r *attachmentRoot, name string, row *a
 	}()
 	info, e := f.Stat()
 	if e != nil || !attachmentOwned(info, false) {
+		// A failed high-level Stat still fails staging. Independently inspect
+		// the created descriptor solely to authorize cleanup, never publication.
+		var st syscall.Stat_t
+		if syscall.Fstat(int(f.Fd()), &st) == nil {
+			if current, pathErr := r.root.Lstat(name); pathErr == nil && attachmentOwned(current, false) {
+				if named, ok := current.Sys().(*syscall.Stat_t); ok && named.Dev == st.Dev && named.Ino == st.Ino && named.Uid == st.Uid {
+					var cleanupProofErr error
+					artifact.pin, artifact.info, cleanupProofErr = pinAttachmentStage(r, name, current)
+					e = errors.Join(e, cleanupProofErr)
+				}
+			}
+		}
 		return attachmentFail("unsafe_path", e)
+	}
+	artifact.info = info
+	artifact.pin, artifact.info, e = pinAttachmentStage(r, name, info)
+	if e != nil {
+		return e
 	}
 	input, e := row.data.Open()
 	if e != nil {
@@ -179,6 +206,18 @@ func stageAttachment(ctx context.Context, r *attachmentRoot, name string, row *a
 	}
 	if e == nil {
 		e = f.Sync()
+	}
+	if e == nil {
+		// Retain a real descriptor through publication so removing the stage
+		// pathname cannot free/reuse the inode we verified.
+		var pinned os.FileInfo
+		pinned, e = artifact.pin.Stat()
+		if e == nil && (!attachmentOwned(pinned, false) || !os.SameFile(info, pinned)) {
+			e = attachmentFail("unsafe_path", nil)
+		}
+		if e == nil {
+			artifact.info = pinned
+		}
 	}
 	e = errors.Join(e, f.Close())
 	closed = true
@@ -211,6 +250,70 @@ func stageAttachment(ctx context.Context, r *attachmentRoot, name string, row *a
 	}
 	if h != row.SHA256 || size != row.DecodedBytes {
 		return attachmentFail("incomplete_content", nil)
+	}
+	pinned, e := artifact.pin.Stat()
+	current, pathErr := r.root.Lstat(name)
+	if e != nil || pathErr != nil || !attachmentArtifactMatches(pinned, artifact.info, row, 1) || !attachmentArtifactMatches(current, artifact.info, row, 1) {
+		return attachmentFail("unsafe_path", errors.Join(e, pathErr))
+	}
+	return nil
+}
+
+func pinAttachmentStage(r *attachmentRoot, name string, expected os.FileInfo) (*os.File, os.FileInfo, error) {
+	f, e := r.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if e != nil {
+		return nil, nil, e
+	}
+	info, e := f.Stat()
+	if e != nil || !attachmentOwned(info, false) || !os.SameFile(info, expected) {
+		return nil, nil, errors.Join(attachmentFail("unsafe_path", e), f.Close())
+	}
+	return f, info, nil
+}
+
+func attachmentArtifactMatches(info, expected os.FileInfo, row *attachmentRow, maxLinks uint64) bool {
+	if info == nil || expected == nil || !os.SameFile(info, expected) || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || info.Size() != row.DecodedBytes || !info.ModTime().Equal(expected.ModTime()) {
+		return false
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == uint32(os.Geteuid()) && st.Nlink >= 1 && uint64(st.Nlink) <= maxLinks
+}
+
+// Follow the filing writers' final-link readback through a pinned directory.
+// Extraction additionally requires the staged inode, 0600 mode and exact digest;
+// its content scope has already closed before publication.
+func verifyAttachmentArtifact(ctx context.Context, r *attachmentRoot, name string, row *attachmentRow, expected os.FileInfo, maxLinks uint64, maxBytes int64) (result error) {
+	before, e := r.root.Lstat(name)
+	if e != nil {
+		return e
+	}
+	if !attachmentArtifactMatches(before, expected, row, maxLinks) {
+		return attachmentFail("unsafe_path", nil)
+	}
+	f, e := r.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if e != nil {
+		return e
+	}
+	defer func() { result = errors.Join(result, f.Close()) }()
+	opened, e := f.Stat()
+	if e != nil || !attachmentArtifactMatches(opened, expected, row, maxLinks) {
+		return attachmentFail("unsafe_path", e)
+	}
+	h, size, e := attachmentDigest(ctx, func() (io.ReadCloser, error) {
+		// The helper owns only this reader wrapper; f stays pinned for the
+		// post-read descriptor/path observations below.
+		return io.NopCloser(f), nil
+	}, maxBytes)
+	if e != nil {
+		return e
+	}
+	if h != row.SHA256 || size != row.DecodedBytes {
+		return attachmentFail("incomplete_content", nil)
+	}
+	after, e := f.Stat()
+	current, pathErr := r.root.Lstat(name)
+	if e != nil || pathErr != nil || !attachmentArtifactMatches(after, expected, row, maxLinks) || !attachmentArtifactMatches(current, expected, row, maxLinks) {
+		return attachmentFail("unsafe_path", errors.Join(e, pathErr))
 	}
 	return nil
 }
@@ -248,21 +351,34 @@ func extractAttachments(ctx context.Context, r *attachmentRoot, rows []*attachme
 		}
 		return ctx.Err()
 	}
-	stages := make([]string, len(rows))
+	artifacts := make([]attachmentArtifact, len(rows))
 	cleanup := func() error {
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		var err error
-		for i, name := range stages {
-			if name != "" {
-				if e := cleanupCtx.Err(); e != nil {
-					return errors.Join(err, e)
-				}
-				if e := r.remove(name); e != nil {
-					err = errors.Join(err, e)
-				} else {
-					stages[i] = ""
-				}
+		for i := range artifacts {
+			a := &artifacts[i]
+			if a.name == "" {
+				continue
+			}
+			if e := cleanupCtx.Err(); e != nil {
+				return errors.Join(err, e)
+			}
+			current, e := r.root.Lstat(a.name)
+			if os.IsNotExist(e) {
+				a.name = ""
+				continue
+			}
+			if e != nil || a.info == nil || !os.SameFile(current, a.info) {
+				// An unknown replacement is not ours to remove, even if it occupies
+				// the unpredictable name we originally created.
+				err = errors.Join(err, attachmentFail("unsafe_path", e))
+				continue
+			}
+			if e = r.remove(a.name); e != nil {
+				err = errors.Join(err, e)
+			} else {
+				a.name = ""
 			}
 		}
 		return err
@@ -271,22 +387,55 @@ func extractAttachments(ctx context.Context, r *attachmentRoot, rows []*attachme
 		if e := cleanup(); e != nil {
 			result = attachmentFail("cleanup", errors.Join(result, e))
 		}
+		attempted := false
+		for i := range artifacts {
+			attempted = attempted || artifacts[i].attempted
+		}
+		if attempted {
+			if e := r.sync(); e != nil {
+				result = attachmentFail("cleanup", errors.Join(result, e))
+			}
+		}
+		// Reconcile every attempted destination after all link, cleanup and sync
+		// operations, including earlier outputs on a late batch failure. Cancellation
+		// cannot make us label an unaudited destination as a complete publication.
+		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		for i := range artifacts {
+			a, row := &artifacts[i], rows[i]
+			if !a.attempted {
+				continue
+			}
+			e := verifyAttachmentArtifact(auditCtx, r, row.OutputName, row, a.info, 1, l.PartBytes)
+			if e == nil {
+				row.Status, row.SavedPath = "published", row.PlannedPath
+				row.artifactUnverified = false
+			} else if os.IsNotExist(e) && a.linkErr != nil {
+				// A failed link with no destination has no artifact to claim.
+				row.SavedPath = ""
+			} else {
+				code, _ := attachmentError(e)
+				row.Status, row.SavedPath, row.ErrorCode, row.Detail = "failed", "", code, "destination could not be verified; inspect planned_path"
+				row.artifactUnverified = true
+				result = errors.Join(result, e)
+			}
+		}
+		for i := range artifacts {
+			if artifacts[i].pin != nil {
+				if e := artifacts[i].pin.Close(); e != nil {
+					result = attachmentFail("cleanup", errors.Join(result, e))
+				}
+			}
+		}
+		if result == nil {
+			for _, row := range rows {
+				row.Status = "saved"
+			}
+		}
 	}()
 	for i, row := range rows {
 		name := ".mailpipe-attachment-" + rand.Text()
-		// A failed exclusive create must not cause cleanup to remove an entry
-		// we did not create. Register only after stageOpen succeeds.
-		open := r.stageOpen
-		r.stageOpen = func(name string) (attachmentFile, error) {
-			f, e := open(name)
-			if e == nil {
-				stages[i] = name
-			}
-			return f, e
-		}
-		e := stageAttachment(ctx, r, name, row, l.PartBytes)
-		r.stageOpen = open
-		if e != nil {
+		if e := stageAttachment(ctx, r, name, row, l.PartBytes, &artifacts[i]); e != nil {
 			code, _ := attachmentError(e)
 			return fail(row, code, e)
 		}
@@ -298,23 +447,28 @@ func extractAttachments(ctx context.Context, r *attachmentRoot, rows []*attachme
 		if e := ctx.Err(); e != nil {
 			return fail(row, "cancelled", e)
 		}
-		if e := r.link(stages[i], row.OutputName); e != nil {
+		a := &artifacts[i]
+		a.attempted = true
+		a.linkErr = r.link(a.name, row.OutputName)
+		if a.linkErr != nil {
 			code := "io_error"
-			if os.IsExist(e) {
+			if os.IsExist(a.linkErr) {
 				code = "collision"
 			}
-			return fail(row, code, e)
+			return fail(row, code, a.linkErr)
 		}
-		row.Status, row.SavedPath = "published", row.PlannedPath
-	}
-	if e := cleanup(); e != nil {
-		return attachmentFail("cleanup", e)
-	}
-	if e := r.sync(); e != nil {
-		return attachmentFail("cleanup", e)
-	}
-	for _, row := range rows {
-		row.Status = "saved"
+		// This is reconciliation of an already attempted local write. Finish
+		// its bounded readback even if cancellation arrived during Link; the
+		// next iteration still refuses any further publication on cancellation.
+		verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		e := verifyAttachmentArtifact(verifyCtx, r, row.OutputName, row, a.info, 2, l.PartBytes)
+		cancel()
+		if e != nil {
+			code, _ := attachmentError(e)
+			row.Status, row.ErrorCode, row.Detail = "failed", code, "destination could not be verified; inspect planned_path"
+			row.artifactUnverified = true
+			return e
+		}
 	}
 	return nil
 }
