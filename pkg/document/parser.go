@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/mail"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -21,6 +22,7 @@ type parser struct {
 	decoded, headers int64
 	nodes            int
 	inlineIDs        []string
+	inspect          bool
 }
 type countedDecoded struct {
 	p    *parser
@@ -79,7 +81,7 @@ func boundedParameters(value string, max int) error {
 	}
 	return nil
 }
-func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies, err error) {
+func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int, path string) (b bodies, err error) {
 	if depth > p.l.Depth || p.nodes >= p.l.Parts {
 		return b, incomplete("MIME depth or part limit exceeded", nil)
 	}
@@ -128,6 +130,7 @@ func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies,
 		var attachedBlob *Blob
 		attachmentsBefore := len(p.d.Attachments)
 		inlineBefore := len(p.inlineIDs)
+		partsBefore := len(p.d.Parts)
 		if attached {
 			attachedBlob, e = p.spool(&countedDecoded{p: p, r: r}, p.l.PartBytes)
 			if e != nil {
@@ -156,7 +159,7 @@ func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies,
 			if e != nil {
 				return b, incomplete("incomplete multipart", e)
 			}
-			child, e := p.walk(part.Header, part, depth+1)
+			child, e := p.walk(part.Header, part, depth+1, path+"."+strconv.Itoa(index+1))
 			if e != nil {
 				return b, e
 			}
@@ -221,6 +224,8 @@ func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies,
 			p.inlineIDs = p.inlineIDs[:inlineBefore]
 			p.d.Attachments = p.d.Attachments[:attachmentsBefore]
 			p.d.Attachments = append(p.d.Attachments, FilePart{name, ct, "", attachedBlob})
+			p.d.Parts = p.d.Parts[:partsBefore]
+			p.part(path, "attachment", name, ct, disp, "", attachedBlob)
 			return bodies{}, nil
 		}
 		return b, nil
@@ -236,6 +241,7 @@ func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies,
 	if ct == "message/rfc822" {
 		attachmentsBefore := len(p.d.Attachments)
 		inlineBefore := len(p.inlineIDs)
+		partsBefore := len(p.d.Parts)
 		rd, e := raw.Open()
 		if e != nil {
 			return b, e
@@ -259,7 +265,7 @@ func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies,
 			}
 		}
 		if e == nil {
-			b, e = p.walk(nh, nr, depth+1)
+			b, e = p.walk(nh, nr, depth+1, path+".1")
 		}
 		e = errors.Join(e, rd.Close())
 		if e != nil {
@@ -272,6 +278,8 @@ func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies,
 			p.inlineIDs = p.inlineIDs[:inlineBefore]
 			p.d.Attachments = p.d.Attachments[:attachmentsBefore]
 			p.d.Attachments = append(p.d.Attachments, FilePart{name, ct, "", raw})
+			p.d.Parts = p.d.Parts[:partsBefore]
+			p.part(path, "attachment", name, ct, disp, "", raw)
 			if e = p.discardBodies(b, bodies{}); e != nil {
 				return b, e
 			}
@@ -292,7 +300,17 @@ func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies,
 		return b, nil
 	}
 	cid := strings.Trim(strings.TrimSpace(h.Get("Content-ID")), "<>")
-	if cid != "" && strings.HasPrefix(ct, "image/") && disp != "attachment" {
+	inlineImage := cid != "" && strings.HasPrefix(ct, "image/") && disp != "attachment"
+	kind := "attachment"
+	// Match the legacy views: CID inline images take precedence over a name,
+	// but a named image without CID follows the ordinary attachment rule.
+	if inlineImage || !attached && strings.HasPrefix(ct, "image/") {
+		kind = "inline_image"
+	}
+	if attached || strings.HasPrefix(ct, "image/") {
+		p.part(path, kind, name, ct, disp, cid, raw)
+	}
+	if inlineImage {
 		if _, exists := p.d.Inline[cid]; exists {
 			return b, incomplete("ambiguous inline content ID", nil)
 		}
@@ -305,6 +323,9 @@ func (p *parser) walk(h textproto.MIMEHeader, r io.Reader, depth int) (b bodies,
 		return b, nil
 	}
 	if ct != "text/plain" && ct != "text/html" {
+		if p.inspect && strings.HasPrefix(ct, "image/") {
+			return b, nil
+		}
 		return b, raw.CloseContext(p.ctx)
 	}
 	rd, e := raw.Open()
@@ -425,7 +446,11 @@ func (p *parser) discardBodies(old, keep bodies) error {
 
 // ParseReader shares the MIME traversal used by Parse. All raw input must be
 // complete; callers with a provider use OpenSource before parsing.
-func ParseReader(ctx context.Context, r io.Reader, s *Scope) (d *FileDoc, err error) {
+func ParseReader(ctx context.Context, r io.Reader, s *Scope) (*FileDoc, error) {
+	return parseReader(ctx, r, s, false)
+}
+
+func parseReader(ctx context.Context, r io.Reader, s *Scope, inspect bool) (d *FileDoc, err error) {
 	if s == nil {
 		return nil, incomplete("scope required", nil)
 	}
@@ -472,8 +497,8 @@ func ParseReader(ctx context.Context, r io.Reader, s *Scope) (d *FileDoc, err er
 		return d, incomplete("invalid header encoding", e)
 	}
 	d.Date, _ = mail.Header(h).Date()
-	p := &parser{ctx: ctx, d: d, l: l, headers: headerBytes}
-	d.body, e = p.walk(h, body, 0)
+	p := &parser{ctx: ctx, d: d, l: l, headers: headerBytes, inspect: inspect}
+	d.body, e = p.walk(h, body, 0, "1")
 	if e != nil {
 		return d, e
 	}
