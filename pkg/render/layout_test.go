@@ -34,3 +34,36 @@ func TestPDFKeepsSmallTableAndInlineLogoPresentation(t *testing.T) {
 		t.Fatalf("small/inline presentation changed: %s", f.page)
 	}
 }
+
+func TestPDFSeparatesBareImageRunsButKeepsImagesInTextInline(t *testing.T) {
+	img := `<img width="60" height="30" src="data:image/png;base64,aW1hZ2U=">`
+	for _, tc := range []struct {
+		name, page string
+		blocks     int
+	}{
+		{"bare-after-header", `<div>Source header</div>` + img + "\n" + img, 2},
+		{"inline-text", `<p>Before ` + img + img + ` after</p>`, 0},
+		{"inline-spans", `<p><span>Before</span>` + img + img + `<span>after</span></p>`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeChrome{out: []byte("%PDF-1.7 fixture\n%%EOF\n")}
+			if _, err := (render.Chrome{Path: "/chrome", Runner: f}).PDF(context.Background(), tc.page); err != nil {
+				t.Fatal(err)
+			}
+			if n := strings.Count(f.page, "display:block !important"); n != tc.blocks {
+				t.Fatalf("standalone blocks %d, want %d: %s", n, tc.blocks, f.page)
+			}
+		})
+	}
+}
+
+func TestPDFRejectsSourcePageRulesButPreservesOrdinaryCSS(t *testing.T) {
+	f := &fakeChrome{out: []byte("%PDF-1.7 fixture\n%%EOF\n")}
+	page := `<style>p {color:blue} @media print { @page receipt:first {size:20in 20in!important;margin:0!important} } @\70 age :left {size:20in 20in!important} p::before {content:"@page stays text"}</style><p>Ordinary text</p>`
+	if _, err := (render.Chrome{Path: "/chrome", Runner: f}).PDF(context.Background(), page); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.page, "20in") || !strings.Contains(f.page, "p {color:blue}") || !strings.Contains(f.page, `content:"@page stays text"`) {
+		t.Fatalf("source page rule or ordinary CSS handling: %s", f.page)
+	}
+}

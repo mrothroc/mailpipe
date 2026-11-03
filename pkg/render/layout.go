@@ -19,7 +19,7 @@ const (
 )
 
 var printStyle = fmt.Sprintf(`@media print {
-@page { size:%gin %gin; margin:%gin; }
+@page { size:%gin %gin !important; margin:%gin !important; }
 html, body { margin:0 !important; padding:0 !important; }
 pre { white-space:pre-wrap; overflow-wrap:anywhere; }
 }`, paperWidthIn, paperHeightIn, pageMarginIn)
@@ -62,6 +62,8 @@ func fitImages(n *html.Node) (hasImage, hasText bool) {
 				addLayoutStyle(child, "display:block !important;")
 			}
 		}
+	} else if hasImage {
+		blockStandaloneImageRuns(n)
 	}
 	if !hasImage || n.Type != html.ElementNode || n.Data == "body" {
 		return
@@ -108,4 +110,54 @@ func fitImages(n *html.Node) (hasImage, hasText bool) {
 		addLayoutStyle(n, style)
 	}
 	return
+}
+
+func imageRunSpace(n *html.Node) bool {
+	return n.Type == html.CommentNode || n.Type == html.TextNode && strings.TrimSpace(n.Data) == "" || n.Type == html.ElementNode && n.Data == "style"
+}
+
+func imageRunBoundary(n *html.Node) bool {
+	if n == nil {
+		return true
+	}
+	if n.Type != html.ElementNode {
+		return false
+	}
+	switch n.Data {
+	case "article", "aside", "blockquote", "br", "div", "dl", "figure", "figcaption", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "ol", "p", "pre", "section", "table", "ul":
+		return true
+	}
+	return false
+}
+
+// Headers are block siblings, not inline text belonging to the following image
+// run. Detect runs locally so a header elsewhere in body cannot suppress fitting.
+func blockStandaloneImageRuns(n *html.Node) {
+	var previous *html.Node
+	for child := n.FirstChild; child != nil; {
+		if imageRunSpace(child) {
+			child = child.NextSibling
+			continue
+		}
+		if child.Type != html.ElementNode || child.Data != "img" {
+			previous = child
+			child = child.NextSibling
+			continue
+		}
+		first, count := child, 0
+		for child != nil && (imageRunSpace(child) || child.Type == html.ElementNode && child.Data == "img") {
+			if child.Type == html.ElementNode && child.Data == "img" {
+				count++
+			}
+			child = child.NextSibling
+		}
+		if count >= 2 && imageRunBoundary(previous) && imageRunBoundary(child) {
+			for image := first; image != child; image = image.NextSibling {
+				if image.Type == html.ElementNode && image.Data == "img" {
+					addLayoutStyle(image, "display:block !important;")
+				}
+			}
+		}
+		previous = first
+	}
 }

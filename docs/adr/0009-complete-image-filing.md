@@ -26,7 +26,9 @@ presentation overrides, not a general CSS rewriting engine.
 
 Only individual images avoid internal page breaks. Containers stay fragmentable.
 Standalone image runs use block boxes so adjacent replaced elements do not create
-an oversized inline line box; images embedded in ordinary text remain inline.
+an oversized inline line box. Runs between block siblings are detected even when
+the same parent contains source headers; images embedded in ordinary text remain
+inline.
 There is no forced page break before every image, whole-message unbreakable group,
 transform scaling or whole-page rasterization. Source fonts, colors, links and
 ordinary text/table structure remain.
@@ -77,3 +79,9 @@ boxes oversized, blanket layout flattening harms ordinary mail, and pixel
 resampling duplicates the browser while raising memory cost. These alternatives
 are rejected. No public APIs, dependencies, provider behavior, mailbox writes or
 generated architecture change is needed.
+
+Source `@page` rules are removed before installing the trusted geometry, including
+named pages, pseudo pages, conditional rules and escaped page keywords. Merely
+appending a plain page rule cannot override a more specific source rule. The
+narrow CSS scan preserves ordinary rules, quoted strings, comments and function
+arguments; it does not change the existing resource policy.

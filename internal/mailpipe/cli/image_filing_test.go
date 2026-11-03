@@ -31,7 +31,13 @@ func TestCompleteImageFiling(t *testing.T) {
 		{"conflicting", []imageFixture{{600, 3600, 0, `width="3000" height="3000" style="min-width:3000px!important;min-height:3000px!important;max-width:none!important;max-height:none!important;object-fit:cover!important"`}}, "", ""},
 		{"table", []imageFixture{{600, 3600, 0, ""}}, `<table width="2400" style="width:2400px"><tr><td><div style="width:2400px;height:4000px;overflow:hidden">`, `</div></td></tr></table>`},
 		{"multiple", []imageFixture{{600, 3600, 0, ""}, {3600, 600, 1, ""}, {2400, 3200, 2, ""}}, `<div>`, `</div>`},
+		{"multiple-bare", []imageFixture{{600, 3600, 0, ""}, {3600, 600, 1, ""}, {2400, 3200, 2, ""}}, "", ""},
+		{"page-style", []imageFixture{{600, 3600, 0, ""}}, `<style>@page { size:20in 20in !important; margin:0 !important; }</style>`, ""},
+		{"page-style-specific", []imageFixture{{600, 3600, 0, ""}}, `<style>@media print { @page receipt:first { size:20in 20in !important; margin:0 !important; } @page :first { size:20in 20in !important; margin:0 !important; } body { page:receipt; } }</style>`, ""},
+		{"page-style-recovery", []imageFixture{{600, 3600, 0, ""}}, "<style>p{content:\"broken\n} @page :first{size:20in 20in!important;margin:0!important}</style>", ""},
+		{"page-style-url-recovery", []imageFixture{{600, 3600, 0, ""}}, `<style>p{background:url(bad"token)}@page :first{size:20in 20in!important;margin:0!important}</style>`, ""},
 		{"ordinary", []imageFixture{{120, 60, 0, `width="60" height="30"`}}, `<p style="font:16px serif;color:blue">Ordinary readable message</p><table width="500"><tr><td>Item</td><td>Total</td></tr></table>`, `<p>End of ordinary message</p>`},
+		{"inline-text", []imageFixture{{120, 60, 0, `width="60" height="30"`}}, `<p style="font:16px serif;color:blue">Ordinary readable message</p><table width="500"><tr><td>Item</td><td>Total</td></tr></table><p>Inline <span>before</span> `, ` <span>after</span> image.</p><p>End of ordinary message</p>`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := imageFixtureMIME(tc.images, tc.before, tc.after)
