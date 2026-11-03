@@ -63,6 +63,20 @@ Without `--execute`, each of these commands is a check that changes nothing. Run
 
 Costs depend on the configured stages, models and message volume. Set explicit cost caps.
 
+## Filing a single record by hand
+
+For one message, templates are optional. `mailpipe attachments list <n>` shows its
+true MIME files, and `mailpipe attachments extract <n> --part <selector> --out-dir
+<private dir>` (check first, then `--execute` to authorize that local write) writes
+the selected decoded bytes. Raw extraction does not mark the message saved and does
+not authorize deletion. Then write a manifest (`n<TAB>folder<TAB>name`), check it
+with `mailpipe save --manifest <file> --root <dir>`, and execute only after the
+owner approves that specific save. Neither step mutates server mail or deletes it:
+extraction writes local files, and `save` creates PDFs and records a local
+`filing:saved` verdict. Deleting mail needs a separately reviewed plan and its own
+approval. This is the same manifest `file draft` writes from templates. See
+[attachments.md](attachments.md) and [filing.md](filing.md).
+
 ## When things go wrong
 
 - **Interrupted:** every command resumes. Rerun the same command.

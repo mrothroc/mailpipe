@@ -27,11 +27,20 @@ A changed receipt layout can cause the fingerprint and model to disagree. Such m
 
 - **`file draft --out <new file>`** writes a manifest for `save`: one row per matched, filed email not yet saved. It records each row as `filing:pending`, so the record shelf life spares it until it is saved. It never replaces a file.
 - **`save --manifest <file> --root ~/Documents`** checks the manifest, and with `--execute` writes the PDFs:
-  - an attachment is saved as is;
+  - a PDF attachment is saved as is;
   - an email without one is rendered offline;
-  - several attachments get names ending ` - <attachment name>`.
+  - several PDF attachments get names ending ` - <attachment name>`.
 
   Files are created with mode 0600 and never overwritten, and a rerun recognises what is already saved.
+
+  A manifest can be written by hand for a one-off record, with no template at all:
+  the header `n<TAB>folder<TAB>name` and one row per message. Templates only automate
+  deciding which messages are filed and how they are named; `save` never requires
+  them. `save` creates PDFs and records a local `filing:saved` verdict, and never
+  mutates server mail or deletes it; deleting mail needs a separately reviewed plan
+  and its own approval. Inspecting and extracting the message's own MIME files
+  first is optional and does not mark it saved. See [attachments.md](attachments.md)
+  for that one-off inspect, extract and file workflow.
 - **`file queue --records tx-kind:record`** lists what waits for the owner: reviews, new kinds, and records from senders with no template. It covers the Inbox only, and leaves out saved and dismissed emails. (`tx-kind:record` is an example; use whichever stage and label mark records.)
 - **`file dismiss <n>... --reason <why>`** records the owner's decision not to file. It goes to the `filing` stage, beside `pending` and `saved`, so rerunning the template stage cannot bring the email back to the queue. Decisions first recorded as template verdicts were undone by exactly such a rerun.
 - **`templates check [--expect <manifest>]`** runs the fingerprint for free over stored mail. With `--expect`, it compares the result with an earlier manifest.

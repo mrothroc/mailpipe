@@ -123,6 +123,35 @@ check. A stable private namespace remains required. Cancellation stops further
 links; bounded five-second reconciliation reads may finish checking already
 attempted writes so uncertain artifacts are never presented as verified files.
 
+## One-off filing without templates
+
+Listing and extraction are useful on their own, and they also start a one-off
+filing workflow that needs no templates. Templates make a recurring decision once
+per kind of email; a single message can instead be filed from a hand-written
+manifest:
+
+1. `mailpipe attachments list <n>` and copy the full `part` selector(s) to keep.
+2. `mailpipe attachments extract <n> --part <selector> --out-dir <dir>` to check,
+   then `--execute` to write the exact decoded bytes. Extraction does not mark the
+   message saved and does not approve deleting it; it only writes local files.
+3. Write a save manifest — the header `n<TAB>folder<TAB>name`, then one row per
+   message — and run `mailpipe save --manifest <file> --root <dir>` to check it.
+   This is the same manifest [file draft](filing.md) writes from templates; a
+   template is optional for a one-off record.
+4. Only `mailpipe save … --execute`, with the owner's approval for that specific
+   save, writes a PDF into the filing tree and records a local `filing:saved`
+   verdict. Without it, nothing is written and no verdict changes.
+
+The filed PDF is separate from the extracted files: a PDF attachment is filed as
+is, while a message without one is rendered offline. Extraction and `save` are
+local-only: extraction writes the selected files, and `save` creates PDFs and
+records a local `filing:saved` verdict. Neither mutates server mail or deletes it;
+`save` requires the owner's approval for that specific save. Deleting mail is a
+separate action that needs a reviewed plan and its own approval. Extraction never
+opens, renders or executes what it writes, and its output files are not evidence
+that the message was filed. Read-only providers such as Yahoo still refuse `save
+--execute`; listing and extraction remain available there.
+
 ## Output and errors
 
 Commands use the shared `github.com/mrothroc/agentio` contract: stdout contains TSV

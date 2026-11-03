@@ -17,9 +17,9 @@ func NewRootCommand(deps Deps) *cobra.Command {
 	agentio.SetDefaultOutDir(dataDir + "/out")
 	root := &cobra.Command{
 		Use:   "mailpipe",
-		Short: "Mirror Graph or read-only Yahoo mail and run reviewed processing stages",
+		Short: "Mirror Microsoft 365 or read-only Yahoo mail and run reviewed processing stages",
 		Long: "mailpipe mirrors a configured mailbox into local SQLite (~/mail/mailpipe.db).\n" +
-			"Graph uses device-code sign-in; Yahoo uses an app password entered on hidden stdin.\n" +
+			"Microsoft 365 (Graph) uses device-code sign-in; Yahoo uses an app password entered on hidden stdin.\n" +
 			"Credentials live only in the current macOS user's Keychain. Fresh setup disables\n" +
 			"model and external-stage transfers until explicit per-account authorization.\n\n" +
 			"The Yahoo pilot supports real read-only sync, content, classification and local plans.\n" +
