@@ -34,6 +34,78 @@ type ReconciliationError struct {
 	Structural bool
 	Reason     string
 	Cause      error
+	Conflict   *ReconciliationConflict
+}
+
+// ReconciliationDiagnosticField is display data, never an identity reference.
+// An oversized value is omitted entirely, not shortened into a different ID.
+type ReconciliationDiagnosticField struct {
+	Value        string
+	OmittedBytes int
+}
+
+// ReconciliationConflictMessage contains only the metadata used to locate a
+// conflict. It deliberately cannot carry a State, locator or proof capability.
+type ReconciliationConflictMessage struct {
+	ID, InternetMessageID, Sender, CollectionID ReconciliationDiagnosticField
+}
+
+// ReconciliationConflictOriginal identifies an original local row separately
+// from the observed message. Correlated originals remain distinct.
+type ReconciliationConflictOriginal struct {
+	N       int64
+	Message ReconciliationConflictMessage
+}
+
+// ReconciliationConflict describes only the first conflicting observation.
+// Enumeration and original inspection are incomplete, even without omissions.
+// MatchingOriginals counts matches for this observed record only, not a mailbox.
+type ReconciliationConflict struct {
+	Account             ReconciliationDiagnosticField
+	ObservedMessage     ReconciliationConflictMessage
+	Originals           []ReconciliationConflictOriginal
+	MatchingOriginals   int
+	Started, ObservedAt time.Time
+	Pages, Observed     int
+}
+
+const reconciliationConflictOriginalLimit = 32
+const reconciliationDiagnosticFieldLimit = 1024
+
+func reconciliationDiagnosticField(value string) ReconciliationDiagnosticField {
+	if len(value) > reconciliationDiagnosticFieldLimit {
+		return ReconciliationDiagnosticField{OmittedBytes: len(value)}
+	}
+	return ReconciliationDiagnosticField{Value: strings.Clone(value)}
+}
+
+func reconciliationConflictMessage(id, header, sender, collection string) ReconciliationConflictMessage {
+	return ReconciliationConflictMessage{
+		ID: reconciliationDiagnosticField(id), InternetMessageID: reconciliationDiagnosticField(header),
+		Sender: reconciliationDiagnosticField(sender), CollectionID: reconciliationDiagnosticField(collection),
+	}
+}
+
+func (p *Provider) reconciliationConflict(refs []LegacyReference, state mailbox.State, out LegacyEvidence) *ReconciliationConflict {
+	c := &ReconciliationConflict{
+		Account: reconciliationDiagnosticField(string(p.account.ID)),
+		ObservedMessage: reconciliationConflictMessage(string(state.Ref.MessageID), state.Metadata.InternetMessageID,
+			state.Metadata.Sender.Address, string(state.Memberships[0].Collection.CollectionID)),
+		Started: out.Started, ObservedAt: time.Now().UTC(), Pages: out.Pages, Observed: out.Observed,
+	}
+	// refs is the existing exact-header bucket. Count all matching originals for
+	// this record, without retaining an unbounded list or making another read.
+	for _, r := range refs {
+		if r.Ref.MessageID == state.Ref.MessageID || !strings.EqualFold(strings.TrimSpace(r.Sender), strings.TrimSpace(state.Metadata.Sender.Address)) {
+			continue
+		}
+		c.MatchingOriginals++
+		if len(c.Originals) < reconciliationConflictOriginalLimit {
+			c.Originals = append(c.Originals, ReconciliationConflictOriginal{N: r.N,
+				Message: reconciliationConflictMessage(string(r.Ref.MessageID), r.InternetMessageID, r.Sender, string(r.Collection.CollectionID))})
+		}
+	}
+	return c
 }
 
 func (e *ReconciliationError) Error() string { return "Graph reconciliation: " + e.Reason }
@@ -142,7 +214,9 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 			out.Observed++
 			for _, r := range correlations[state.Metadata.InternetMessageID] {
 				if string(r.Ref.MessageID) != w.ID && strings.EqualFold(strings.TrimSpace(r.Sender), strings.TrimSpace(state.Metadata.Sender.Address)) {
-					return out, reconciliationBlock("different immutable identities share historical header evidence; preserve the mirror and request owner review")
+					return out, &ReconciliationError{Structural: true,
+						Reason:   "different immutable identities share historical header evidence; preserve the mirror and request owner review",
+						Conflict: p.reconciliationConflict(correlations[state.Metadata.InternetMessageID], state, out)}
 				}
 			}
 			if _, ok := targets[w.ID]; ok {

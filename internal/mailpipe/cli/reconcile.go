@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
-	"github.com/mrothroc/mailpipe/pkg/graph"
+	"time"
 
 	"github.com/mrothroc/agentio"
+	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
+	"github.com/mrothroc/mailpipe/pkg/graph"
 	"github.com/mrothroc/mailpipe/pkg/graphmail"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/store"
@@ -26,8 +27,15 @@ type reconciliationVerifier struct {
 	report    store.LegacyReconciliationReceipt
 }
 
-func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.Account, p store.LegacyPreparation) (store.LegacyReconciliation, error) {
-	proof := store.LegacyReconciliation{Verification: store.LegacyVerification{Account: a, Nonce: p.Challenge(), States: map[int64]mailbox.State{}, Folders: map[string]mailbox.CollectionRef{}, HistoricalAttributionConfirmed: v.confirmed}, Unavailable: map[int64]string{}}
+func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.Account, p store.LegacyPreparation) (proof store.LegacyReconciliation, err error) {
+	v.report = store.LegacyReconciliationReceipt{}
+	defer func() {
+		if err != nil {
+			proof = store.LegacyReconciliation{}
+			v.report = store.LegacyReconciliationReceipt{}
+		}
+	}()
+	proof = store.LegacyReconciliation{Verification: store.LegacyVerification{Account: a, Nonce: p.Challenge(), States: map[int64]mailbox.State{}, Folders: map[string]mailbox.CollectionRef{}, HistoricalAttributionConfirmed: v.confirmed}, Unavailable: map[int64]string{}}
 	if v.provider.Account() != a {
 		return proof, &mailbox.AccountMismatchError{Operation: "legacy reconciliation", Expected: a.ID, Actual: v.provider.Account().ID}
 	}
@@ -85,6 +93,81 @@ func reconciliationError(e error) error {
 		return agentio.NewStaleError("legacy reconciliation evidence changed or conflicts with the reviewed proposal", "mailpipe account reconcile")
 	}
 	return e
+}
+
+// reconciliationFailure retains error identity without rendering raw joined
+// causes (including untrusted writer errors) into the command's error line.
+type reconciliationFailure struct {
+	mapped, cause, output error
+}
+
+func (e *reconciliationFailure) Error() string { return e.mapped.Error() }
+func (e *reconciliationFailure) Code() int     { return agentio.ExitCode(e.mapped) }
+func (e *reconciliationFailure) Unwrap() []error {
+	errs := []error{e.mapped, e.cause}
+	if e.output != nil {
+		errs = append(errs, e.output)
+	}
+	return errs
+}
+
+func reconciliationFailureOutput(agent *agentio.AgentIO, cause error) error {
+	mapped := reconciliationError(cause)
+	var evidence *graphmail.ReconciliationError
+	var output error
+	if errors.As(cause, &evidence) && evidence.Structural && evidence.Conflict != nil {
+		output = reconciliationConflictOutput(agent, evidence.Conflict)
+		if output != nil {
+			mapped = agentio.NewStaleError(evidence.Error()+"; conflict diagnostic output incomplete", "preserve the mirror and request owner review of the original identity evidence")
+		}
+	}
+	return &reconciliationFailure{mapped: mapped, cause: cause, output: output}
+}
+
+func reconciliationConflictOutput(agent *agentio.AgentIO, c *graphmail.ReconciliationConflict) error {
+	header := []string{"status", "diagnostic_kind", "diagnostic_scope", "enumeration_complete", "original_inspection_complete", "provider", "account", "n", "original_id", "original_header", "original_sender", "original_collection", "observed_id", "observed_header", "observed_sender", "observed_collection", "matching_originals", "retained_originals", "omitted_originals", "fields_omitted_bytes", "started", "observed_at", "pages", "observed"}
+	rows := make([]map[string]any, 0, len(c.Originals))
+	for _, original := range c.Originals {
+		// Only primitive containers reach Tabled: agentio does not recursively
+		// redact typed structs or pointers. Keys are fixed application labels.
+		omitted := map[string]any{}
+		row := map[string]any{
+			"status": "blocked", "diagnostic_kind": "historical_header_sender_collision", "diagnostic_scope": "first_conflicting_observation",
+			"enumeration_complete": false, "original_inspection_complete": false, "provider": "graph", "n": original.N,
+			"matching_originals": c.MatchingOriginals, "retained_originals": len(c.Originals), "omitted_originals": c.MatchingOriginals - len(c.Originals),
+			"fields_omitted_bytes": omitted, "started": c.Started.Format(time.RFC3339Nano), "observed_at": c.ObservedAt.Format(time.RFC3339Nano), "pages": c.Pages, "observed": c.Observed,
+		}
+		fields := map[string]graphmail.ReconciliationDiagnosticField{
+			"account": c.Account, "original_id": original.Message.ID, "original_header": original.Message.InternetMessageID,
+			"original_sender": original.Message.Sender, "original_collection": original.Message.CollectionID,
+			"observed_id": c.ObservedMessage.ID, "observed_header": c.ObservedMessage.InternetMessageID,
+			"observed_sender": c.ObservedMessage.Sender, "observed_collection": c.ObservedMessage.CollectionID,
+		}
+		for name, field := range fields {
+			row[name] = field.Value
+			if field.OmittedBytes != 0 {
+				omitted[name] = field.OmittedBytes
+			}
+		}
+		rows = append(rows, row)
+	}
+	if err := agentio.Tabled(agent, header, rows, func(row map[string]any) []string {
+		values := make([]string, len(header))
+		for i, key := range header {
+			if key == "fields_omitted_bytes" {
+				// This map has only fixed keys and byte counts, no metadata.
+				raw, _ := json.Marshal(row[key])
+				values[i] = string(raw)
+			} else {
+				values[i] = fmt.Sprint(row[key])
+			}
+		}
+		return values
+	}, func(row map[string]any) map[string]any { return row }); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintln(agent.Stderr(), "[hint] blocked: incomplete first-conflict correlation diagnostics only; retain this untrusted report privately, preserve the mirror and request owner review; no identity, historical attribution or action authority is granted")
+	return err
 }
 func legacyAttributionError(e error) error {
 	if errors.Is(e, mailbox.ErrStaleIdentity) {
@@ -202,7 +285,7 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 		if execute {
 			bound, e := store.ReconcileLegacy(ctx, dbPath(cmd), p.Account(), prep, confirmR, verifier)
 			if e != nil {
-				return reconciliationError(e)
+				return reconciliationFailureOutput(agent, e)
 			}
 			receipt, e := bound.LegacyReconciliationReceipt(ctx)
 			e = errors.Join(e, bound.Close())
@@ -216,7 +299,7 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 			status = "bound"
 		} else {
 			if _, e = verifier.ReconcileLegacy(ctx, p.Account(), prep); e != nil {
-				return reconciliationError(e)
+				return reconciliationFailureOutput(agent, e)
 			}
 			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
 		}
