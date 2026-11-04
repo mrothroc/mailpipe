@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
+	"github.com/mrothroc/mailpipe/pkg/graphmail"
 	"github.com/mrothroc/mailpipe/pkg/imapauth"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/store"
@@ -211,11 +212,11 @@ func assertProtectedConfig(t *testing.T, c config.Config) {
 }
 
 func TestGraphConfigWritersPreserveConcurrentOptOut(t *testing.T) {
-	for _, writer := range []string{"sync", "bind-recovery", "bind-history"} {
+	for _, writer := range []string{"sync", "bind-recovery", "bind-history", "reconcile-history"} {
 		t.Run(writer, func(t *testing.T) {
 			ctx, c, p, deps, path := graphConfigFixture(t)
 			args := []string{"sync", "--folder", "inbox"}
-			if writer == "bind-history" {
+			if writer == "bind-history" || writer == "reconcile-history" {
 				legacy, e := store.Open(path)
 				if e != nil {
 					t.Fatal(e)
@@ -226,6 +227,9 @@ func TestGraphConfigWritersPreserveConcurrentOptOut(t *testing.T) {
 					t.Fatal(e)
 				}
 				args = []string{"account", "bind", "--execute", "--confirm-history", prep.Digest()}
+				if writer == "reconcile-history" {
+					args = reconciliationConfigArgs(t, c.Account(), prep)
+				}
 			} else {
 				db, e := store.OpenAccount(ctx, path, c.Account())
 				if e != nil {
@@ -282,14 +286,14 @@ func TestGraphConfigWritersPreserveConcurrentOptOut(t *testing.T) {
 }
 
 func TestGraphRoutingRefusesChangedSelection(t *testing.T) {
-	for _, writer := range []string{"sync", "bind-recovery", "bind-history"} {
+	for _, writer := range []string{"sync", "bind-recovery", "bind-history", "reconcile-history"} {
 		for _, change := range []string{"registration", "account", "provider"} {
 			t.Run(writer+"/"+change, func(t *testing.T) {
 				ctx, c, p, deps, path := graphConfigFixture(t)
 				args := []string{"sync", "--folder", "inbox"}
 				var db *store.AccountStore
 				var e error
-				if writer == "bind-history" {
+				if writer == "bind-history" || writer == "reconcile-history" {
 					legacy, err := store.Open(path)
 					if err != nil {
 						t.Fatal(err)
@@ -300,6 +304,9 @@ func TestGraphRoutingRefusesChangedSelection(t *testing.T) {
 						t.Fatal(err)
 					}
 					args = []string{"account", "bind", "--execute", "--confirm-history", prep.Digest()}
+					if writer == "reconcile-history" {
+						args = reconciliationConfigArgs(t, c.Account(), prep)
+					}
 				} else {
 					db, e = store.OpenAccount(ctx, path, c.Account())
 					if e != nil {
@@ -414,4 +421,24 @@ func TestConfigInitRechecksExistenceInsideSession(t *testing.T) {
 		}
 	}
 
+}
+
+func (p *configTestGraph) ReconcileLegacyReferences(ctx context.Context, _ []graphmail.LegacyReference) (graphmail.LegacyEvidence, error) {
+	// These fixtures have no live references. Keep the existing barrier at
+	// post-binding routing resolution, where processing can legitimately reopen
+	// the account, rather than inside exclusive historical verification.
+	started := time.Now().UTC()
+	if e := ctx.Err(); e != nil {
+		return graphmail.LegacyEvidence{}, e
+	}
+	return graphmail.LegacyEvidence{States: map[int64]mailbox.State{}, Unavailable: map[int64]bool{}, Started: started, Finished: time.Now().UTC(), Pages: 1}, nil
+}
+func reconciliationConfigArgs(t *testing.T, a mailbox.Account, p store.LegacyPreparation) []string {
+	t.Helper()
+	now := time.Now().UTC()
+	r, e := store.ReviewLegacyReconciliation(a, p, store.LegacyReconciliation{Verification: store.LegacyVerification{Account: a, Nonce: p.Challenge(), States: map[int64]mailbox.State{}, Folders: map[string]mailbox.CollectionRef{}}, Coverage: store.LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1})
+	if e != nil {
+		t.Fatal(e)
+	}
+	return []string{"account", "reconcile", "--execute", "--confirm-account", string(a.ID), "--confirm-history", p.Digest(), "--confirm-reconciliation", r.Digest}
 }

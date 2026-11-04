@@ -197,6 +197,17 @@ func (g *fakeGraph) Get(_ context.Context, path string, q url.Values, out any) e
 	if g.getErr != nil {
 		return g.getErr
 	}
+	if path == "/me/messages" {
+		if g.pagesErr != nil {
+			return g.pagesErr
+		}
+		value := []any{}
+		for id := range g.server {
+			value = append(value, g.message(id))
+		}
+		b, _ := json.Marshal(map[string]any{"value": value})
+		return json.Unmarshal(b, out)
+	}
 	if g.pagesErr != nil && (strings.Contains(path, "/messages/delta") || g.pages[path] != nil) {
 		return g.pagesErr
 	}
@@ -250,7 +261,7 @@ func (g *fakeGraph) Get(_ context.Context, path string, q url.Values, out any) e
 			}
 		}
 		if !found {
-			return &graph.APIError{Status: 404}
+			return &graph.APIError{Status: 404, Code: "ErrorItemNotFound"}
 		}
 	}
 	b, _ := json.Marshal(g.message(id))

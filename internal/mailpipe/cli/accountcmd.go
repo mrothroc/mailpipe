@@ -103,8 +103,10 @@ func newAccountCommand(deps Deps) *cobra.Command {
 			return err
 		}
 		verifier := &legacyVerifier{provider: p, confirmed: execute && confirmation == prep.Digest()}
-		if _, err = verifier.VerifyLegacy(ctx, p.Account(), prep); err != nil {
-			return err
+		if !execute {
+			if _, err = verifier.VerifyLegacy(ctx, p.Account(), prep); err != nil {
+				return legacyAttributionError(err)
+			}
 		}
 		status := "verified"
 		if execute {
@@ -113,7 +115,7 @@ func newAccountCommand(deps Deps) *cobra.Command {
 			}
 			bound, e := store.BindLegacy(ctx, dbPath(cmd), p.Account(), prep, verifier)
 			if e != nil {
-				return e
+				return legacyAttributionError(e)
 			}
 			if e = bound.Close(); e != nil {
 				return e
@@ -158,5 +160,5 @@ func newAccountCommand(deps Deps) *cobra.Command {
 	})
 	bind.Flags().Bool("execute", false, "permanently bind verified history and save account routing")
 	bind.Flags().String("confirm-history", "", "exact reviewed inventory digest confirming attribution of all history")
-	return newGroup("account", "Inspect account routing/capabilities or bind Graph history", bind, newAccountShowCommand(), newCapabilitiesCommand(deps))
+	return newGroup("account", "Inspect account routing/capabilities or bind Graph history", bind, newReconcileCommand(deps), newAccountShowCommand(), newCapabilitiesCommand(deps))
 }

@@ -21,8 +21,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 const providerSchema = `
+create table if not exists legacy_reconciliations(singleton integer primary key check(singleton=1),account_id text not null,provider_id text not null,source_digest text not null,reconciliation_digest text not null,receipt text not null,unique(account_id,provider_id));
+create table if not exists legacy_reconciliation_items(n integer primary key,account_id text not null,provider_id text not null,item text not null,foreign key(n,account_id,provider_id) references messages(n,account_id,provider_id),foreign key(account_id,provider_id) references legacy_reconciliations(account_id,provider_id));
 create table if not exists store_binding(singleton integer primary key check(singleton=1),account_id text not null,provider_id text not null,generation integer not null check(generation>0),bound_at text not null);
 create table if not exists collections(account_id text not null,provider_id text not null,collection_id text not null,name text not null,mailbox_id text not null default '',uidvalidity integer not null default 0,epoch_generation integer not null default 1,primary key(account_id,provider_id,collection_id));
 create table if not exists memberships(account_id text not null,provider_id text not null,n integer not null,collection_id text not null,primary key(account_id,provider_id,n,collection_id),foreign key(n,account_id,provider_id) references messages(n,account_id,provider_id),foreign key(account_id,provider_id,collection_id) references collections(account_id,provider_id,collection_id));
@@ -106,7 +108,7 @@ func schemaCurrent(ctx context.Context, q sqlAccess) (bool, error) {
 	if e != nil {
 		return false, e
 	}
-	known := map[string]bool{"messages": true, "sync_state": true, "verdicts": true, "plans": true, "plan_items": true, "actions": true, "store_binding": true, "collections": true, "memberships": true, "imap_locators": true, "provider_sync_state": true, "sync_passes": true, "sync_pages": true, "sync_seen": true}
+	known := map[string]bool{"legacy_reconciliations": true, "legacy_reconciliation_items": true, "messages": true, "sync_state": true, "verdicts": true, "plans": true, "plan_items": true, "actions": true, "store_binding": true, "collections": true, "memberships": true, "imap_locators": true, "provider_sync_state": true, "sync_passes": true, "sync_pages": true, "sync_seen": true}
 	for names.Next() {
 		var typ, name string
 		if e = names.Scan(&typ, &name); e != nil {
@@ -521,55 +523,87 @@ func tableSpecs(ctx context.Context, q sqlAccess) ([]tableSpec, error) {
 	return tables, nil
 }
 func hashPart(h hash.Hash, v any) { b, _ := json.Marshal(v); fmt.Fprintf(h, "%d:", len(b)); h.Write(b) }
+
+// digestRows retains the original typed/chunked hash byte stream. Statements
+// live only for one table traversal; no digest or prepared SQL crosses an
+// invocation or transaction boundary.
 func digestRows(ctx context.Context, q sqlAccess, h hash.Hash, tables []tableSpec) error {
 	for _, t := range tables {
-		hashPart(h, t)
-		var last int64
-		first := true
-		for {
-			if e := ctx.Err(); e != nil {
-				return e
-			}
-			var row int64
+		if e := digestTableRows(ctx, q, h, t); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+func digestTableRows(ctx context.Context, q sqlAccess, h hash.Hash, t tableSpec) (err error) {
+	prepared := map[string]*sql.Stmt{}
+	defer func() {
+		for _, stmt := range prepared {
+			err = errors.Join(err, stmt.Close())
+		}
+	}()
+	preparer, canPrepare := q.(interface {
+		PrepareContext(context.Context, string) (*sql.Stmt, error)
+	})
+	scanRow := func(query string, args []any, dest ...any) error {
+		if !canPrepare {
+			return q.QueryRowContext(ctx, query, args...).Scan(dest...)
+		}
+		stmt := prepared[query]
+		if stmt == nil {
 			var e error
-			if first {
-				e = q.QueryRowContext(ctx, "select rowid from "+quote(t.Name)+" order by rowid limit 1").Scan(&row)
-				first = false
-			} else {
-				e = q.QueryRowContext(ctx, "select rowid from "+quote(t.Name)+" where rowid>? order by rowid limit 1", last).Scan(&row)
-			}
-			if errors.Is(e, sql.ErrNoRows) {
-				break
-			}
+			stmt, e = preparer.PrepareContext(ctx, query)
 			if e != nil {
 				return e
 			}
-			last = row
-			hashPart(h, "row")
-			for _, col := range t.Columns {
-				var typ string
-				var length int64
-				e = q.QueryRowContext(ctx, "select typeof("+quote(col)+"),coalesce(length(cast("+quote(col)+" as blob)),0) from "+quote(t.Name)+" where rowid=?", row).Scan(&typ, &length)
-				if e != nil {
+			prepared[query] = stmt
+		}
+		return stmt.QueryRowContext(ctx, args...).Scan(dest...)
+	}
+	hashPart(h, t)
+	var last int64
+	first := true
+	for {
+		if e := ctx.Err(); e != nil {
+			return e
+		}
+		var row int64
+		var e error
+		if first {
+			e = scanRow("select rowid from "+quote(t.Name)+" order by rowid limit 1", nil, &row)
+			first = false
+		} else {
+			e = scanRow("select rowid from "+quote(t.Name)+" where rowid>? order by rowid limit 1", []any{last}, &row)
+		}
+		if errors.Is(e, sql.ErrNoRows) {
+			break
+		}
+		if e != nil {
+			return e
+		}
+		last = row
+		hashPart(h, "row")
+		for _, col := range t.Columns {
+			var typ string
+			var length int64
+			if e = scanRow("select typeof("+quote(col)+"),coalesce(length(cast("+quote(col)+" as blob)),0) from "+quote(t.Name)+" where rowid=?", []any{row}, &typ, &length); e != nil {
+				return e
+			}
+			hashPart(h, typ)
+			hashPart(h, length)
+			for offset := int64(1); offset <= length; offset += 32768 {
+				if e = ctx.Err(); e != nil {
 					return e
 				}
-				hashPart(h, typ)
-				hashPart(h, length)
-				for offset := int64(1); offset <= length; offset += 32768 {
-					if e = ctx.Err(); e != nil {
-						return e
-					}
-					var chunk []byte
-					e = q.QueryRowContext(ctx, "select substr(cast("+quote(col)+" as blob),?,32768) from "+quote(t.Name)+" where rowid=?", offset, row).Scan(&chunk)
-					if e != nil {
-						return e
-					}
-					h.Write(chunk)
+				var chunk []byte
+				if e = scanRow("select substr(cast("+quote(col)+" as blob),?,32768) from "+quote(t.Name)+" where rowid=?", []any{offset, row}, &chunk); e != nil {
+					return e
 				}
+				h.Write(chunk)
 			}
 		}
-		hashPart(h, "end")
 	}
+	hashPart(h, "end")
 	return nil
 }
 func dataDigest(ctx context.Context, q sqlAccess, t []tableSpec) (string, error) {
@@ -772,7 +806,7 @@ func openQuiescentSnapshot(target *lifecycleLease) (int, error) {
 }
 
 func validateAttribution(ctx context.Context, q sqlAccess, a mailbox.Account, bound bool) error {
-	for _, table := range []string{"messages", "plans", "plan_items", "actions", "collections", "memberships", "imap_locators", "provider_sync_state", "sync_passes"} {
+	for _, table := range []string{"messages", "plans", "plan_items", "actions", "collections", "memberships", "imap_locators", "provider_sync_state", "sync_passes", "legacy_reconciliations", "legacy_reconciliation_items"} {
 		var bad int
 		var e error
 		if bound {

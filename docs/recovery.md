@@ -60,20 +60,22 @@ session's staging or weakens lifecycle locks.
 
 ## Historical binding blocked by missing live references
 
-There is a known gap in the account-bound migration path: a historical Graph
-mirror can require attribution before sync, while `account bind` refuses a stored
-live reference that Graph now returns as missing. Its suggested full sync then
-refuses the unattributed mirror. Repeating the loop or signing in again does not
-reconcile that history. There is currently no supported CLI command to repair
-this canonical stale-reference case.
+A historical Graph mirror can require attribution before sync while strict
+`account bind` refuses a stored live reference that is now unavailable. Use
+`mailpipe account reconcile` in that same private context to preview complete
+read-only evidence and review every disposition. With specific owner approval,
+its execute path requires exact account, full-history and reconciliation digests.
+See [reviewed Graph reconciliation](graph-reconciliation.md) for the supported
+workflow, evidence limits, preserved history, backups and partial routing recovery.
 
-Preserve the mirror and backup and report the contradictory commands without
-private identifiers. Do not force binding, mark rows removed by raw SQL, fabricate
-account metadata or claim that successful authentication proves historical
-ownership. Reconciliation must preserve historical attribution and action evidence.
-See [the roadmap](../PLAN.md) for this remaining work.
+A 404 or enumeration absence does not prove ownership. Wrong accounts, ambiguous
+identities, incomplete enumeration and an inventory with no verified live anchor
+remain blocked. Preserve the mirror and backup; restore original evidence or
+request owner review. Do not force binding, manually mark rows removed, fabricate
+account metadata, or repeat prebinding full sync. Historical pending plans still
+need fresh inspection and review before execution.
 
-## Isolated read-only survey while recovery is pending
+## Isolated read-only survey during blocked recovery
 
 If a current-mail survey is needed, use a separate private configuration copy and
 new empty database, with the intended existing login and approved stages. Keep

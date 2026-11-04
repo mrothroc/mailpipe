@@ -552,11 +552,19 @@ func (a *AccountStore) InvalidateIMAPEpoch(ctx context.Context, scope mailbox.Co
 	})
 }
 
+// LegacyHistoricalReference contains only the identity needed to attribute an
+// already removed row. Cached content and metadata remain in the database.
+type LegacyHistoricalReference struct {
+	N       int64
+	GraphID string
+}
+
 // LegacyPreparation is an opaque, exact inventory challenge. Only the package
 // creates it; verification is a trusted adapter seam, not authentication itself.
 type LegacyPreparation struct {
 	digest, nonce, path string
 	Live                []Message
+	Removed             []LegacyHistoricalReference
 }
 
 // Digest identifies the complete prepared schema and data without exposing it.
@@ -638,16 +646,41 @@ func PrepareLegacyBinding(ctx context.Context, path string) (out LegacyPreparati
 		}
 		out.Live = append(out.Live, m)
 	}
+	if e = rows.Err(); e != nil {
+		return out, e
+	}
+	rows.Close()
+	out.Removed, e = legacyRemoved(ctx, db)
+	return out, e
+}
+
+func legacyRemoved(ctx context.Context, q sqlAccess) (out []LegacyHistoricalReference, err error) {
+	rows, e := q.QueryContext(ctx, "select n,graph_id from messages where removed=1 order by n")
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ref LegacyHistoricalReference
+		if e = rows.Scan(&ref.N, &ref.GraphID); e != nil {
+			return nil, e
+		}
+		out = append(out, ref)
+	}
 	return out, rows.Err()
 }
 
 // BindLegacy permanently attributes verified legacy history. All prebinding
 // plans stay auditable but lack bound execution preconditions.
 func BindLegacy(ctx context.Context, path string, account mailbox.Account, p LegacyPreparation, verifier LegacyBindingVerifier) (out *AccountStore, err error) {
+	return bindLegacy(ctx, path, account, p, verifier, nil)
+}
+
+func bindLegacy(ctx context.Context, path string, account mailbox.Account, p LegacyPreparation, verifier LegacyBindingVerifier, reconciliation *legacyReconciliationRequest) (out *AccountStore, err error) {
 	if e := account.Validate(); e != nil {
 		return nil, e
 	}
-	if account.ProviderID != GraphProvider || verifier == nil || p.digest == "" || p.nonce == "" {
+	if account.ProviderID != GraphProvider || (verifier == nil && reconciliation == nil) || p.digest == "" || p.nonce == "" {
 		return nil, errors.New("store: complete Graph legacy verification required")
 	}
 	life, db, e := maintenanceDB(ctx, path)
@@ -699,17 +732,42 @@ func BindLegacy(ctx context.Context, path string, account mailbox.Account, p Leg
 			p.Live[i].Body = &body
 		}
 	}
-	proof, e := verifier.VerifyLegacy(ctx, account, p)
+	p.Removed, e = legacyRemoved(ctx, db)
+	if e != nil {
+		return nil, e
+	}
+	authoritative := p
+	authoritative.Live = live
+	authoritative.Removed = append([]LegacyHistoricalReference(nil), p.Removed...)
+	var proof LegacyVerification
+	var unavailable map[int64]string
+	if reconciliation == nil {
+		proof, e = verifier.VerifyLegacy(ctx, account, p)
+	} else {
+		var evidence LegacyReconciliation
+		evidence, e = reconciliation.verifier.ReconcileLegacy(ctx, account, p)
+		if e == nil {
+			reconciliation.receipt, e = ReviewLegacyReconciliation(account, authoritative, evidence)
+		}
+		if e == nil && reconciliation.receipt.Digest != reconciliation.confirmation {
+			e = stale("reconciliation changed; run a new reconciliation preview")
+		}
+		proof = evidence.Verification
+		unavailable = evidence.Unavailable
+	}
 	if e != nil {
 		return nil, e
 	}
 	if proof.Account != account {
 		return nil, &mailbox.AccountMismatchError{Operation: "legacy verification", Expected: account.ID, Actual: proof.Account.ID}
 	}
-	if proof.Nonce != p.nonce || !proof.HistoricalAttributionConfirmed || len(proof.States) != len(live) {
+	if proof.Nonce != p.nonce || !proof.HistoricalAttributionConfirmed || len(proof.States)+len(unavailable) != len(live) {
 		return nil, errors.New("store: complete verified inventory and historical attribution required")
 	}
 	for _, m := range live {
+		if _, ok := unavailable[m.N]; ok {
+			continue
+		}
 		state, ok := proof.States[m.N]
 		if !ok {
 			return nil, stale("live identity was not verified")
@@ -727,7 +785,7 @@ func BindLegacy(ctx context.Context, path string, account mailbox.Account, p Leg
 	if e != nil {
 		return nil, e
 	}
-	_, backupDigest, e := backupDatabase(ctx, life, conn)
+	backupPath, backupDigest, e := backupDatabase(ctx, life, conn)
 	if e != nil {
 		conn.Close()
 		return nil, e
@@ -738,78 +796,7 @@ func BindLegacy(ctx context.Context, path string, account mailbox.Account, p Leg
 	}
 	a := &AccountStore{account: account}
 	e = immediate(ctx, conn, func(q sqlAccess) error {
-		digest, e := logicalDigest(ctx, q)
-		if e != nil {
-			return e
-		}
-		if digest != p.digest {
-			return stale("legacy inventory changed before binding")
-		}
-		if _, e = q.ExecContext(ctx, "insert into store_binding values(1,?,?,1,?)", account.ID, account.ProviderID, time.Now().UTC().Format(time.RFC3339)); e != nil {
-			return e
-		}
-		// Preserve every original column, including the legacy folder projection.
-		rs, e := q.QueryContext(ctx, "select "+inventoryColumns+",removed from messages order by n")
-		if e != nil {
-			return e
-		}
-		type legacy struct {
-			m       Message
-			removed bool
-		}
-		var all []legacy
-		for rs.Next() {
-			var m Message
-			var recipients string
-			var body sql.NullString
-			var removed bool
-			e = rs.Scan(&m.N, &m.GraphID, &m.InternetMessageID, &m.Folder, &m.Received, &m.Sender, &m.SenderName, &recipients, &m.Subject, &m.Preview, &m.HasAttachments, &m.IsRead, &body, &removed)
-			if e != nil {
-				break
-			}
-			if e = json.Unmarshal([]byte(recipients), &m.Recipients); e != nil {
-				break
-			}
-			all = append(all, legacy{m, removed})
-		}
-		e = errors.Join(e, rs.Err())
-		rs.Close()
-		if e != nil {
-			return e
-		}
-		for _, row := range all {
-			m := row.m
-			metadata := legacyMetadata(m)
-			valid := m.GraphID != ""
-			state := proof.States[m.N]
-			if !row.removed {
-				metadata = state.Metadata
-			}
-			raw, e := json.Marshal(metadata)
-			if e != nil {
-				return e
-			}
-			_, e = q.ExecContext(ctx, "update messages set account_id=?,provider_id=?,provider_message_id=graph_id,locator=graph_id,revision=?,identity_valid=?,metadata=? where n=?", account.ID, account.ProviderID, state.Revision, valid, string(raw), m.N)
-			if e != nil {
-				return e
-			}
-			if !row.removed {
-				for _, mem := range state.Memberships {
-					if e = a.putCollection(ctx, q, mailbox.Collection{Ref: mem.Collection}); e != nil {
-						return e
-					}
-					if _, e = q.ExecContext(ctx, "insert into memberships values(?,?,?,?)", account.ID, account.ProviderID, m.N, mem.Collection.CollectionID); e != nil {
-						return e
-					}
-				}
-			}
-		}
-		for _, table := range []string{"plans", "plan_items", "actions"} {
-			if _, e = q.ExecContext(ctx, "update "+table+" set account_id=?,provider_id=?", account.ID, account.ProviderID); e != nil {
-				return e
-			}
-		}
-		return integrity(ctx, q)
+		return a.bindLegacyTransaction(ctx, q, p, proof, unavailable, reconciliation, backupPath, backupDigest)
 	})
 	conn.Close()
 	if e != nil {
@@ -822,6 +809,90 @@ func BindLegacy(ctx context.Context, path string, account mailbox.Account, p Leg
 	closed = true
 	return OpenAccount(ctx, path, account)
 }
+func (a *AccountStore) bindLegacyTransaction(ctx context.Context, q sqlAccess, p LegacyPreparation, proof LegacyVerification, unavailable map[int64]string, reconciliation *legacyReconciliationRequest, backupPath, backupDigest string) error {
+	account := a.account
+
+	digest, e := logicalDigest(ctx, q)
+	if e != nil {
+		return e
+	}
+	if digest != p.digest {
+		return stale("legacy inventory changed before binding")
+	}
+	if _, e = q.ExecContext(ctx, "insert into store_binding values(1,?,?,1,?)", account.ID, account.ProviderID, time.Now().UTC().Format(time.RFC3339)); e != nil {
+		return e
+	}
+	// Preserve every original column, including the legacy folder projection.
+	rs, e := q.QueryContext(ctx, "select "+inventoryColumns+",removed from messages order by n")
+	if e != nil {
+		return e
+	}
+	type legacy struct {
+		m       Message
+		removed bool
+	}
+	var all []legacy
+	for rs.Next() {
+		var m Message
+		var recipients string
+		var body sql.NullString
+		var removed bool
+		e = rs.Scan(&m.N, &m.GraphID, &m.InternetMessageID, &m.Folder, &m.Received, &m.Sender, &m.SenderName, &recipients, &m.Subject, &m.Preview, &m.HasAttachments, &m.IsRead, &body, &removed)
+		if e != nil {
+			break
+		}
+		if e = json.Unmarshal([]byte(recipients), &m.Recipients); e != nil {
+			break
+		}
+		all = append(all, legacy{m, removed})
+	}
+	e = errors.Join(e, rs.Err())
+	rs.Close()
+	if e != nil {
+		return e
+	}
+	for _, row := range all {
+		m := row.m
+		metadata := legacyMetadata(m)
+		valid := m.GraphID != ""
+		state := proof.States[m.N]
+		if !row.removed && unavailable[m.N] == "" {
+			metadata = state.Metadata
+		}
+		raw, e := json.Marshal(metadata)
+		if e != nil {
+			return e
+		}
+		_, e = q.ExecContext(ctx, "update messages set account_id=?,provider_id=?,provider_message_id=graph_id,locator=graph_id,revision=?,identity_valid=?,metadata=? where n=?", account.ID, account.ProviderID, state.Revision, valid, string(raw), m.N)
+		if e != nil {
+			return e
+		}
+		if !row.removed && unavailable[m.N] == "" {
+			for _, mem := range state.Memberships {
+				if e = a.putCollection(ctx, q, mailbox.Collection{Ref: mem.Collection}); e != nil {
+					return e
+				}
+				if _, e = q.ExecContext(ctx, "insert into memberships values(?,?,?,?)", account.ID, account.ProviderID, m.N, mem.Collection.CollectionID); e != nil {
+					return e
+				}
+			}
+		}
+	}
+	for _, table := range []string{"plans", "plan_items", "actions"} {
+		if _, e = q.ExecContext(ctx, "update "+table+" set account_id=?,provider_id=?", account.ID, account.ProviderID); e != nil {
+			return e
+		}
+	}
+	if reconciliation != nil {
+		reconciliation.receipt.Backup = backupPath
+		reconciliation.receipt.BackupDigest = backupDigest
+		if e = writeReconciliationReceipt(ctx, q, reconciliation.receipt); e != nil {
+			return e
+		}
+	}
+	return integrity(ctx, q)
+}
+
 func legacyMetadata(m Message) mailbox.Metadata {
 	meta := mailbox.Metadata{InternetMessageID: m.InternetMessageID, Sender: mailbox.Address{Address: m.Sender, Name: m.SenderName}, Subject: m.Subject, Preview: m.Preview, HasAttachments: m.HasAttachments, IsRead: m.IsRead}
 	meta.Received, _ = time.Parse(receivedLayout, m.Received)
