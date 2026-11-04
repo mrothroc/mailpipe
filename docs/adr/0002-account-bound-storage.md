@@ -2,6 +2,11 @@
 
 Status: accepted technical foundation.
 
+This records the storage foundation before CLI adoption. The accountless consumer
+described below is historical context; [ADR 0003](0003-graph-provider-integration.md)
+records Graph adoption. Current attribution and migration limitations are in
+[recovery](../recovery.md).
+
 ## Context
 
 A mirror's local message numbers, verdicts and reviewed action history must

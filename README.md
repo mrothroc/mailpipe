@@ -2,7 +2,7 @@
 
 I was tired of handling a ludicrous amount of email, so I built mailpipe. It is designed as a CLI to be used by an agent to let it help you classify and manage email in a Microsoft 365 mailbox in bulk. I originally tried just controlling the Mail app on my Mac, but it was way too slow.
 
-I use it to automatically delete spam and block senders. It also saves records (like receipts) as PDFs to the local disk, then deletes the emails. Finally, for certain categories, it will automatically delete messages that have been sitting in my inbox for a configured time period so things don't pile up.
+I use it to automatically delete spam and block senders. It also saves records (like receipts) as PDFs to the local disk; a separately reviewed cleanup can then delete the emails. Finally, for certain categories, it will automatically delete messages that have been sitting in my inbox for a configured time period so things don't pile up.
 
 Theoretically a human can use it, but it is intended to be used by an agent.
 
@@ -14,8 +14,8 @@ Classifiers judge messages; policy and numbered plans control actions. Mailbox c
 
 - macOS, with access to the login Keychain. The current authentication implementation uses the macOS `security` command.
 - Homebrew for the recommended installation. Source builds require Git, Make and a supported Go release meeting the minimum in [go.mod](go.mod).
-- A Microsoft 365 mailbox and a Microsoft Entra app registration for device-code sign-in.
-- Network access for Microsoft Graph and any configured model provider. Source builds and security checks also fetch Go modules, release metadata and vulnerability data.
+- A Microsoft 365 mailbox and an Entra app registration for device-code sign-in, or a Yahoo account with an app password for the read-only pilot. See [provider setup](docs/providers.md).
+- Network access for the configured mailbox and any configured model provider. Source builds and security checks also fetch Go modules, release metadata and vulnerability data.
 - Optional: an OpenRouter account and API key for model stages. These stages send selected email content to OpenRouter and incur charges.
 - Optional: Google Chrome, Chromium or Microsoft Edge installed in `/Applications` for rendering email bodies to PDFs.
 
@@ -44,7 +44,7 @@ mailpipe --help
 mailpipe_examples="$PWD/examples"
 ```
 
-The binary is written to `bin/mailpipe`. `make build` also runs the security gate. Gitleaks scans public source files, `govulncheck` checks dependency modules, and the build verifies module checksums and Go release support. These checks fail when required tools or online security metadata are unavailable. The installed pre-commit hook scans staged content and redacts findings.
+The binary is written to `bin/mailpipe`; building does not upgrade the Homebrew installation. Use `command -v mailpipe` to check which executable your shell selects, especially if an older `~/bin` copy shadows Homebrew. There is no `make install` target. `make build` also runs the security gate. Gitleaks scans public source files, `govulncheck` checks dependency modules, and the build verifies module checksums and Go release support. These checks fail when required tools or online security metadata are unavailable. The installed pre-commit hook scans staged content and redacts findings.
 
 The build and documentation checks use Go, Git, Make and the security tools above; no external workflow service is required. See [development.md](docs/development.md) for individual check targets and hook installation details.
 
@@ -63,6 +63,8 @@ mailpipe auth status
 
 Follow the device-code instructions printed by `auth login` in a browser. Authentication tokens are stored in the macOS Keychain, rather than the repository or configuration files.
 
+For Yahoo and multiple-account paths, read [provider setup](docs/providers.md). Before using an older mirror with account-bound storage, read [historical attribution and recovery](docs/recovery.md). Signing in and attributing historical data are separate operations.
+
 ## Configure classifiers and policy
 
 ```sh
@@ -79,19 +81,31 @@ For model stages, create a generic-password item in Keychain Access with service
 
 Optional recipient filtering is documented in [stages.md](docs/stages.md). Custom classifier implementations, sender scopes, prompts and thresholds belong outside this repository; see [private hooks](docs/hooks.md).
 
+Fresh setup disables model and external-stage transfers. After the first sync,
+inspect `mailpipe account show` and, with the owner's authorization, enable the
+needed scopes using `config processing --account <id> --models=true` and/or
+`--external-stages=true`. They are separate permissions; a model key alone does
+not grant either. See [provider setup](docs/providers.md).
+
 ## Run a reviewed cleanup
 
 ```sh
 mailpipe sync
 mailpipe stages
-mailpipe run known --since 1d
-mailpipe run newsletter --since 1d
+mailpipe run known --since '<scan-start>'
+mailpipe run newsletter --since '<scan-start>'
 ```
 
-Run each additional stage you enabled, applying any label filters its input needs. For example, the sample model stage can be run explicitly with a small cost allowance:
+Replace `<scan-start>` with a timestamp covering mail since the last completed scan (see `run --help`). Enable the external-stage consent above before running the sample newsletter executable. Run each additional stage you enabled, applying any label filters its input needs. For example, the sample model stage can be run explicitly with a small cost allowance:
 
 ```sh
-mailpipe run political --since 1d --max-cost-usd 0.05
+mailpipe run political --since '<scan-start>' --max-cost-usd 0.05
+```
+
+Review filing candidates and draft manifests before creating the final cleanup
+plan, so pending records can be protected by policy. Then:
+
+```sh
 mailpipe plan create
 mailpipe plan show <plan-id>
 mailpipe apply <plan-id>
@@ -101,13 +115,13 @@ The last command checks the proposed moves without performing them. After review
 
 Use a time window covering mail since the last scan, and explicit cost caps for paid stages. Review classifications and plans: models can make mistakes or be influenced by malicious message content. Classifiers and hook output cannot authorize execution.
 
-The complete workflow, including filing and recovery, is in [operations.md](docs/operations.md). To inspect or extract a message's MIME files, or to file a one-off record without templates, see [attachments.md](docs/attachments.md) and [filing.md](docs/filing.md). Commands and flags are documented by `mailpipe --help` and `mailpipe <command> --help`.
+The complete workflow, including time-sensitive reruns and filing review, is in [operations.md](docs/operations.md). The execution steps above require Microsoft 365; Yahoo supports local review only. To inspect or extract a message's MIME files, or to file a one-off record without templates, see [attachments.md](docs/attachments.md) and [filing.md](docs/filing.md). Commands and flags are documented by `mailpipe --help` and `mailpipe <command> --help`.
 
 ## Data and customization
 
 Configuration, templates, the SQLite mirror and generated outputs default to `~/mail`, outside the checkout, with private file permissions. `MAILPIPE_CONFIG`, `MAILPIPE_STAGES`, `MAILPIPE_TEMPLATES`, `MAILPIPE_DB` and `MAILPIPE_OUT_DIR` can select other locations. Tokens and API keys remain in the Keychain. Private hooks run as trusted user processes and are not sandboxed.
 
-[Architecture](docs/architecture.md) describes storage and output contracts. [Policy](docs/policy.md), [stages](docs/stages.md) and [filing](docs/filing.md) describe the extension points. Public tests use invented data and do not need access to a real mailbox or model account.
+[The documentation index](docs/README.md) links focused guides. [Architecture](docs/architecture.md) describes storage and output contracts. [Policy](docs/policy.md), [stages](docs/stages.md) and [filing](docs/filing.md) describe the extension points. Public tests use invented data and do not need access to a real mailbox or model account.
 
 ## License
 

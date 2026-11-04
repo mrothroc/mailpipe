@@ -15,16 +15,32 @@ The policy turns each message's latest verdict from every stage into one action:
 - **`junk_senders`:** a server rule moves their new mail to Junk. They are never blocked.
 - **`never_block`:** single messages may be deleted, but the sender never joins the blocklist. Use it for platforms (such as shared notification services) that also send mail worth having.
 
+## Overlapping retention rules
+
+A message can match several rules. A protective `unless` skips that rule only;
+it does not disable other rules. If future or uncertain events must be retained,
+put the corresponding guards on every destructive rule that can match, including
+category-wide age rules. Check all winning reasons in the plan. A correct
+classifier verdict alone does not establish that the resulting policy is safe.
+
+Likewise, `filing:pending` protection requires policy guards; creating a draft is
+not a universal retention override. Review filing before the final deletion plan.
+Keep any owner review evidence separate from a classifier stage that will be rerun.
+
 ## Plans
 
 `mailpipe plan create` records the policy's decision for every live message as a numbered plan. Nothing changes until `apply <plan> --execute`, and the owner reviews the plan first (see [operations.md](operations.md)).
 
 ## The blocklist
 
-A deletion blocks its sender unless every reason for it is `no_block`. `rules` turns the senders of applied deletions into one managed blocklist of server-side Inbox rules, so their new mail goes straight to Deleted Items.
+A deletion blocks its sender unless every reason for it is `no_block`. `rules` uses the local applied-action history to turn senders of applied deletions into one managed blocklist of server-side Inbox rules, so their new mail goes straight to Deleted Items.
 - **A sender is left off** when any of their mail is kept anywhere in the mailbox, when their mail only expired, or when they are protected: a keep sender, `never_block`, a junk sender, the owner, or a contact. Automated senders stay protected here, though the allowlist doesn't keep their mail.
 - **`rules diff`** shows the changes; `rules apply --execute` writes them and reads them back.
 - Only rules mailpipe wrote are touched (`mailpipe blocked #k`, `mailpipe junk #k`). The owner's own rules are never changed.
+
+A scratch mirror without that action history cannot reconstruct the canonical
+managed blocklist. Do not apply its diff as though it represented the original
+history; it can propose removing existing managed rules. See [recovery](recovery.md).
 
 ## Design principles
 
