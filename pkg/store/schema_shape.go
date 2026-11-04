@@ -197,6 +197,9 @@ func validateShapes(ctx context.Context, q sqlAccess, version int) (repair bool,
 	}
 	legacyCols := map[string]bool{"account_id": true, "provider_id": true, "provider_message_id": true, "locator": true, "revision": true, "identity_valid": true, "email_id": true, "content_digest": true, "metadata": true}
 	for _, spec := range actual {
+		if version == 1 && (spec.Name == "legacy_reconciliations" || spec.Name == "legacy_reconciliation_items") {
+			return false, errors.New("store: receipt tables require versioned migration")
+		}
 		if version == 0 {
 			switch spec.Name {
 			case "messages", "verdicts", "plans", "plan_items", "actions", "sync_state":
@@ -269,7 +272,9 @@ func validateShapes(ctx context.Context, q sqlAccess, version int) (repair bool,
 			}
 		}
 		if !present {
-			if version == 0 {
+			if version == 1 && (name == "legacy_reconciliations" || name == "legacy_reconciliation_items") {
+				repair = true
+			} else if version == 0 {
 				if name == "messages" || name == "plans" || name == "plan_items" || name == "actions" || name == "verdicts" || name == "sync_state" {
 					return false, errors.New("store: incomplete legacy schema")
 				}
@@ -309,7 +314,7 @@ func validateIndexes(ctx context.Context, q sqlAccess, version int) error {
 	if e = rows.Err(); e != nil {
 		return e
 	}
-	if version == schemaVersion {
+	if version >= 1 {
 		for name := range schemaModel.indexes {
 			if !seen[name] {
 				return errors.New("store: required index missing")

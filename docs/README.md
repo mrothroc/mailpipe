@@ -9,6 +9,7 @@ output. A checkout's `bin/mailpipe` and the executable on `PATH` can differ.
 | Configure an account and processing consent | [Providers](providers.md) |
 | Run and review a scan | [Operations](operations.md) |
 | Diagnose binding, migration or interrupted work | [Recovery](recovery.md) |
+| Reconcile unavailable historical Graph references | [Reviewed reconciliation](graph-reconciliation.md) |
 | Understand layers, identity and output | [Architecture](architecture.md) |
 | Configure classifiers and actions | [Stages](stages.md), [policy](policy.md) |
 | Maintain a private classifier | [Hooks](hooks.md) |

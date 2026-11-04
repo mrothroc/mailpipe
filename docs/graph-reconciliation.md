@@ -1,0 +1,201 @@
+# Reviewed historical Graph reconciliation
+
+Authentication, configuration routing and historical attribution are separate.
+A stale cached reference can prevent strict `account bind` while an unattributed
+mirror prevents sync. `account reconcile` provides a reviewed local recovery for
+that case. It preserves the original database and message numbers; an isolated
+survey database is not recovery evidence or a replacement for its history.
+
+## Preview and approval
+
+Stop older nonparticipating programs and close other database sessions. Preserve
+the mirror and existing migration backups. Select the intended private
+configuration and database consistently for every command. Start with the built
+binary's `account reconcile --help`.
+
+```sh
+mailpipe account reconcile --json
+```
+
+Opening an old schema can perform a backed-up migration. The preview itself does
+not bind history, save routing, publish sync observations or change server mail.
+It inventories the complete database, enumerates current primary-mailbox metadata,
+and inspects every original live immutable reference. It fetches no bodies.
+
+Review the immutable account, complete history digest, reconciliation digest,
+coverage and observation times, counts, and **every message disposition**:
+
+- `verified`: the exact original immutable ID, locator, header identity, sender
+  and mapped collection passed inspection. Changed collection membership is a
+  conflict requiring separate review in this recovery path.
+- `unavailable`: a completed enumeration did not observe this exact ID, and a
+  subsequent exact lookup returned Graph's recognized item-not-found response.
+  The original row remains history, with no invented current membership/revision.
+- `historical`: the original row was already removed. Its history still requires
+  owner attribution, including when there are no live rows.
+
+Output limits affect presentation only. The shared output writer retains the
+complete report in the private overflow file named on stderr. Review that file
+when output overflows. Directories/files use `0700`/`0600`; keep reports outside
+the repository and do not publish account or mail identifiers. A blocked or
+incomplete run produces no executable proposal digest.
+
+Only if the owner knows that **all** history belongs to the displayed account,
+including every unavailable row, obtain specific approval for local attribution:
+
+```text
+mailpipe account reconcile --execute --confirm-account <account> --confirm-history <history-digest> --confirm-reconciliation <reconciliation-digest>
+```
+
+Use the exact reviewed values. Execute regenerates the evidence under exclusive
+lifecycle ownership; a changed inventory or proposal requires a new preview and
+review. An editable report cannot supply remote proof. Absence, a matching sender,
+message content, and a successful sign-in do not establish historical ownership.
+At least one original live immutable reference must verify before newly
+unavailable references can be accepted as owner-confirmed history.
+
+## Results and limits
+
+A completed reconciliation permanently binds the existing mirror and records an
+atomic receipt with the source/proposal digests, verified backup, coverage,
+confirmations and per-message dispositions. All original message numbers, Graph
+IDs, legacy columns, bodies, verdicts, filing provenance, plans and action IDs
+remain. Unavailable rows have no current membership and are excluded from active
+inventory, but remain accessible by original message number and in history.
+Their immutable identity reservation is retained. A later normal sync observing
+that same ID reuses its original number; another ID gets a distinct number even
+when headers/content match.
+
+After routing is saved, normal full sync can run. It uses fresh checkpoints;
+legacy delta links are not adopted. Historical pending plans remain readable but
+cannot execute. Create and review fresh plans. Approval for `apply --execute`,
+`rules apply --execute`, `save --execute`, and private policy changes remains
+separate.
+
+`account reconcile --json` displays the committed receipt offline when routing
+selects the bound account. The receipt describes the reconciliation observation,
+not the mailbox's current state after later syncs. If attribution committed but
+routing resolution/save failed, the error reports partial local completion.
+Repair the private configuration for the same account and retry execute with the
+same three confirmations. This verifies the committed receipt and repairs routing;
+it does not replay reconciliation, replace the mirror or rebind it.
+
+Incomplete enumeration, authorization/read failures, canceled reads, malformed
+pages, unsafe or cyclic pagination, duplicates and exceeded safety limits never
+become absence evidence. Transient failures report a read-failure result: resolve
+the cause and retry a preview. Structural conflicts report a stale/blocked result:
+preserve the mirror and request owner review of the original identity evidence.
+A no-anchor result requires restoring access to an original immutable reference
+or obtaining a separately approved evidence policy. It does not direct you to
+prebinding full sync or automatic sign-in. Unknown ownership remains a stop.
+
+Enumeration is limited to the signed-in primary mailbox exposed by `/me/messages`,
+including Deleted Items. It is not an atomic mailbox snapshot, archive/recoverable
+store survey, proof of permanent deletion, or proof of ownership of absent items.
+Enumeration and direct-inspection contradictions require fresh evidence. Different
+IDs sharing historical header/sender evidence are ambiguous; this command does
+not remap them. Archive moves and export/reimport can change immutable IDs.
+See Microsoft's [message-listing contract](https://learn.microsoft.com/en-us/graph/api/user-list-messages?view=graph-rest-1.0)
+and [immutable-ID guidance](https://learn.microsoft.com/en-us/graph/outlook-immutable-id).
+
+The collector's [paging and evidence limits](../pkg/graphmail/reconciliation.go)
+and the Graph client's [response bounds and retries](../pkg/graph/graph.go) are
+specified in their implementations. Reaching a limit is incomplete evidence
+requiring a reviewed resource plan, not permission to truncate or narrow
+verification. Every authenticated request retains the pinned immutable subject
+and immutable-ID preference.
+
+## Storage and preparation cost
+
+The [schema and migration implementation](../pkg/store/migration.go) defines the
+current version and recognized upgrade paths. Reconciliation adds receipt tables
+through the existing verified backup/migration mechanism; unknown shapes,
+extensions and future versions remain refused. Ordinary bound stores gain empty
+receipt tables without a new attribution. Older binaries refuse newer schemas.
+Retain backups and stop older nonparticipating writers before maintenance; never
+delete lifecycle sidecars or manually edit SQLite rows.
+
+The [binding implementation](../pkg/store/account.go) retains full logical history
+digest checks. A current-schema preview performs one full digest. Preparation
+plus execute retains four digest boundaries: preparation, authoritative prebinding
+source, verified immutable backup, and transaction source. Migration has additional
+source/backup and original-data checks and is measured separately. Execute performs
+one remote evidence pass; it does not repeat an extra preview inspection inside
+the same invocation. The preceding operator preview remains a separate operation.
+
+Digest traversal reuses prepared statements only within each table of one
+invocation. It preserves the original schema/type/NULL-sensitive hash byte stream,
+sparse row ordering, cancellation and the bounded cell chunks defined in the
+[digest implementation](../pkg/store/migration.go). It does not cache
+a digest across operations, omit a safety pass, or load whole large cells.
+Preparation still scans the complete history. SQLite caches, inventory/proof
+lists, receipt serialization and ID sets add memory beyond the chunk size.
+Cumulative allocation is not peak resident memory.
+
+Reproduce invented-history measurements with:
+
+```sh
+go test ./pkg/store -run '^$' -bench '^BenchmarkLegacy(History|Migration|Reconciliation|Cancellation)$' -benchtime=1x -count=2 -timeout=30m
+go test ./pkg/graphmail -run '^$' -bench '^BenchmarkGraphLegacyEvidence$' -benchtime=1x -count=2
+```
+
+The [store benchmark source](../pkg/store/reconciliation_performance_test.go)
+defines the invented fixture sizes, body distribution, verdicts and action
+history. It also defines the phase timer boundaries. The
+[Graph benchmark source](../pkg/graphmail/reconciliation_performance_test.go)
+defines its in-process read-only transport, missing-reference fixture and counted
+read operations. Network latency is excluded. Timings are observations, not CI
+thresholds or production capacity guarantees.
+
+The measurements below were collected on 2026-11-04 **before** removed-history
+preparation was narrowed to message numbers and Graph IDs. They document that
+pre-projection experiment, not current preparation or binding timings. The
+digest and migration algorithms were not changed by the projection correction.
+Use the linked benchmark sources to measure the current implementation.
+
+### Historical preparation and digest experiment
+
+Measurements used Go 1.27.3 on darwin/arm64, Apple M1 Max. The original
+algorithm was measured once and statement reuse twice on the same version-2
+invented fixture shape. Other verification work overlapped some samples; these
+are observed timings, not a controlled latency guarantee. Fixture files were
+72,359,936 bytes (10k messages) and 573,444,096 bytes (100k messages).
+
+| Phase/history | Original seconds | Statement reuse seconds (two samples) | Original allocated bytes/op | Reuse allocated bytes/op | Original allocations/op | Reuse allocations/op |
+|---|---:|---:|---:|---:|---:|---:|
+| Prepare / 10k | 11.370628 | 5.279848–5.295800 | 822466416 | 835770792–835771512 | 20446595 | 21273856–21273900 |
+| Prepare / 100k | 106.957466 | 44.586061–53.045138 | 7938064024 | 8070410232–8070611896 | 204455736 | 212715919–212716697 |
+| Digest / 10k | 10.918107 | 5.122999–5.166813 | 807404840 | 820716216–820725168 | 20221793 | 21049137–21049173 |
+| Digest / 100k | 154.343143 | 42.459866–43.108305 | 7769942096 | 7901784952–7901803744 | 202252890 | 210511101–210511184 |
+
+The digest instrumentation counted 826,445 direct query calls at 10k and
+8,259,545 at 100k with the original algorithm, with no explicit `PrepareContext`
+calls. Reuse counted 135 explicit preparations and 19 direct metadata queries
+per digest at either size. These are counted SQL API calls, not a claim that the
+original driver performed zero internal preparations. Prepared statement
+executions still scale with rows, columns and chunks. Cumulative allocations
+increased slightly even though these preparation timings improved. No source,
+backup or transaction digest boundary was removed.
+
+The separate in-process Graph collector measured 0.299–0.320 seconds at 10k
+references (136385696–136738696 allocated bytes, 1513494–1513835 allocations)
+and 2.430–2.556 seconds at 100k (1322105944–1323273808 allocated bytes,
+15135337–15135570 allocations). It made exactly 10,000 inspections plus 50 pages
+at 10k, and 100,000 inspections plus 500 pages at 100k: 10,050 and 100,500
+transport read calls respectively. Each fixture had one unavailable reference.
+These timings exclude network latency and retries. An operator preview and a
+later execute each collect fresh evidence; large real histories can therefore
+require substantial network time as well as local preparation and backup space.
+
+### Historical migration, binding, cancellation and memory
+
+| Phase/history | Seconds (two samples) | Allocated bytes/op | Allocations/op |
+|---|---:|---:|---:|
+| Version-1 migration / 10k | 14.081702–14.857903 | 3938504992–3938599920 | 89166156–89166709 |
+| Version-1 migration / 100k | 110.755951–119.219737 | 38156723568–38157391296 | 891630059–891633177 |
+| Reviewed binding / 10k | 12.986785–13.564907 | 2800111072–2800138712 | 65919779–65919820 |
+| Reviewed binding / 100k | 106.586657–113.954031 | 27091360696–27091375376 | 659134574–659134691 |
+
+In that experiment, preparation cancellation requested after 10 ms returned in 0.010919–0.012417 seconds, including cancellation and cleanup. This is measured latency, not a timing assertion.
+
+The timed store benchmark command reported `516243456` as its maximum resident set size (the raw macOS `/usr/bin/time -l` value). That aggregate covers fixture setup, build/test processes and all phases. It is not steady-state application memory and does not imply constant process memory. The raw timings, allocation counts and preparation counts above deliberately retain the costs of all safety checks.
