@@ -5,19 +5,27 @@ mailpipe separates mailbox synchronisation, classification, user policy and revi
 ## Implemented capabilities
 
 - Microsoft 365 device-code authentication with credentials in the macOS Keychain.
-- Incremental Microsoft Graph synchronisation into SQLite.
+- Incremental Microsoft Graph synchronisation into account/provider-bound SQLite.
+- Provider-neutral identity, membership, sync lifecycle and capability contracts.
+- Read-only Yahoo IMAP setup, complete sync/content and per-account processing consent.
 - Built-in stages and explicitly configured external classifiers.
 - Optional recipient-address filtering for users who configure it.
 - Private classifier hooks with scoped MIME access and bounded run costs.
 - User-configured retention, sender rules and numbered action plans.
 - Server-side managed blocking and junk rules.
-- Template matching, review queues and PDF filing.
+- Template matching, review queues and PDF filing with complete inline images.
+- MIME attachment listing and selected local extraction; one-off filing without templates.
 - Structured CLI output and resumable operations.
 
 See [architecture](docs/architecture.md), [stages](docs/stages.md), [hooks](docs/hooks.md), [policy](docs/policy.md), [filing](docs/filing.md) and [operations](docs/operations.md).
 
 ## Future work
 
+- Supported reconciliation for historical Graph mirrors whose missing live
+  references prevent attribution while unbound state prevents sync. See
+  [recovery](docs/recovery.md); isolated surveys do not repair canonical history.
+- Writable Yahoo actions and server-policy parity, with explicit capabilities.
+- Gmail integration; no Gmail adapter is currently implemented.
 - Optional scheduling with explicit execution and review policies.
 - Alternative deployment targets and credential stores.
 - Further adversarial evaluation of model-dependent classifiers.

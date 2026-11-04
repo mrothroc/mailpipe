@@ -4,16 +4,29 @@ mailpipe is one Go module organised into `cmd/`, `internal/` and `pkg/`, so the 
 
 ## Layers
 
-Each layer only hands data to the next, so a new source, stage or action plugs in without touching the others.
+The CLI composes reusable layers through explicit identity, content and capability contracts. Adding a provider still requires composition and lifecycle integration; sharing domain contracts does not imply identical provider behavior.
 
-1. **Source.** Microsoft Graph, through delegated device-code sign-in (a public client, no secret). A Graph mailbox adapter converts wire data into account-bound domain references. Protocol scanners supply complete pages; the shared sync lifecycle and account store publish them atomically. Bulk changes use reviewed identity checks.
-2. **Store.** A permanently account/provider-bound SQLite mirror of metadata and memberships, with bodies cached on demand, verdict provenance, plans and an action log. Stable local numbers (`n`) survive ordinary moves. Historical attribution is explicit; unbound and account-aware APIs remain separate.
+1. **Source.** Microsoft Graph uses delegated device-code sign-in (a public client, no secret); Yahoo uses read-only IMAP with an app password. A Graph mailbox adapter converts wire data into account-bound domain references. Protocol scanners supply complete pages; the shared sync lifecycle and account store publish them atomically. Bulk changes use reviewed identity checks.
+2. **Store.** A permanently account/provider-bound SQLite mirror of metadata and memberships, with bodies cached on demand, verdict provenance, plans and an action log. Stable local numbers (`n`) survive identity-preserving moves; IMAP moves create distinct occurrences. Historical attribution is explicit; unbound and account-aware APIs remain separate.
 3. **Stages.** Stages judge messages and return verdicts. They never act on mail. See [stages.md](stages.md).
 4. **Policy.** It turns the latest verdict of each stage into an action: keep, quarantine, delete or digest. It lives in private configuration, apart from the stages. See [policy.md](policy.md).
 5. **Actions.**
    - **Plans:** an action happens only through a stored, numbered plan. `apply` moves its messages with Graph JSON batching, re-checking account, immutable identity/locator, Message-ID, sender, membership and any revision immediately before execution, and logs attempts with returned state.
    - **Blocklist:** server-side Inbox rules stop new mail from blocked senders.
    - **Filing:** records are saved as PDFs. See [filing.md](filing.md).
+
+## Identity and context
+
+Authentication proves a provider-specific credential/subject claim. Configuration
+selects routing. Durable database binding attributes all stored history. These are
+separate facts; an empty display field or timeout does not diagnose them. Graph
+uses an immutable authenticated subject; Yahoo uses a configured endpoint/login
+principal. See [provider setup](providers.md) and [recovery](recovery.md).
+
+Local numbers and plan identifiers are scoped to their database/account. A new
+mirror of the same mailbox has its own numbers and action history. RFC Message-ID,
+sender equality and matching content are correlation evidence, not identity proof.
+Never apply a plan or manifest from a scratch mirror against the canonical one.
 
 ## Packages
 
@@ -50,10 +63,10 @@ The table is generated from each package's doc comment (`tools/docgen`). Keep th
 Every command follows the shared agent CLI contract in `github.com/mrothroc/agentio` (version pinned in `go.mod`):
 - stdout carries only data: TSV with a header row, or JSON Lines with `--json`;
 - stderr carries hints, `[error] <command>: <what>. Try: <command>` and a one-line footer;
-- exit codes are fixed: 0 ok, 1 runtime, 2 usage, 3 stale (signed out or unconfigured), 4 no data;
+- exit codes are fixed: 0 ok, 1 runtime, 2 usage, 3 stale (including sign-in, configuration or identity preconditions), 4 no data;
 - `--limit` bounds stdout, and the rest overflows to a private file under `~/mail/out`, named in a hint.
 
-How commands are built on it is in [internal/mailpipe/cli/AGENTS.md](../internal/mailpipe/cli/AGENTS.md).
+Command construction is described in [CLI development](cli-development.md).
 
 ## Where private data lives
 
@@ -83,7 +96,7 @@ metadata without repeated full-source downloads. Operation-owned private spools
 share a finite aggregate quota, and decoded expansion, headers, nesting and
 materializations have separate finite limits. Incomplete content yields protective
 review/keep evidence before model evaluation; cleanup errors remain surfaced.
-Cleanup preserves operation values with a cancellation-independent five-second
+Cleanup preserves operation values with a bounded cancellation-independent
 context. See [bounded IMAP content](adr/0005-bounded-imap-content.md) for exact
 limits, ownership/accounting, cleanup and the actual content/sync composition seam.
 

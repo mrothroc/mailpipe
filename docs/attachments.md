@@ -42,7 +42,7 @@ and numeric positions alone are not selectors. Filtering does not renumber them.
 message looks identical. Changes to headers, boundaries, content or message
 identity invalidate old selectors. Extraction fetches and validates source again;
 it never silently substitutes the same filename or position. Use a bound database
-and a configured account; legacy unbound databases need explicit account binding.
+and a configured account; legacy unbound databases need [explicit account binding](recovery.md). Local numbers and selectors must stay with the exact database/account used to list them.
 
 ## Checking and authorizing local output
 
@@ -178,14 +178,14 @@ wrapper use its normal stderr usage/error contract.
 | 3 | Stale account/message/part identity, unconfigured account or signed-out credentials |
 | 4 | No matching parts |
 
-The finite content limits remain those of [ADR 0005](adr/0005-bounded-imap-content.md):
-64 MiB raw, 128 MiB cumulative decoded, 32 MiB per decoded part, 256 MiB aggregate
-spools, 256 MIME nodes, depth 20, and a two-minute operation timeout by default,
-plus the existing independent header/memory/text limits. No unlimited CLI override
-is added. Output staging has a separate aggregate cap of 128 MiB and a per-file
-cap of 32 MiB; it does not evade or masquerade as content-spool accounting. Copies
-and hashes use at most 32 KiB chunks. These are finite logical resource budgets,
-not a process RSS or machine-global disk guarantee.
+Content limits and cleanup ownership are defined in
+[ADR 0005](adr/0005-bounded-imap-content.md) and implemented in
+[`pkg/document`](../pkg/document). Extraction's separate staging limits and naming
+rules are in [`attachments.go`](../internal/mailpipe/cli/attachments.go) and
+[`attachments_extract.go`](../internal/mailpipe/cli/attachments_extract.go).
+Output staging does not evade content-spool accounting. These are finite logical
+resource budgets, not a process RSS or machine-global disk guarantee; no unlimited
+CLI override is added.
 
 The provider reads preserve unread state. Extraction makes no server mutations,
 model calls, external resource loads, rendering calls or filing verdicts. It does

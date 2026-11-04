@@ -23,7 +23,11 @@ Tool versions are pinned in `Makefile`. The pinned Gitleaks CLI uses the `git --
 
 ## GitHub Actions
 
-The [CI workflow](../.github/workflows/ci.yml) runs `make check` on pushes to `main`, pull requests, every Monday at 11:23 UTC, and manual dispatch. It uses a standard `macos-15` runner, installs Poppler, and explicitly checks executable Chrome, its version, `pdftotext` and `pdftoppm` before running tests. `make test` and `make check` set `MAILPIPE_REQUIRE_RENDER_TESTS=1`: missing or unusable browser/PDF inspection dependencies fail with installation guidance, and required rendering verification cannot skip.
+The [CI workflow](../.github/workflows/ci.yml) is authoritative for triggers, schedule,
+runner and dependencies. It runs the release gate, installs PDF inspection tools
+and checks the browser before testing. `make test` and `make check` require rendering
+verification: missing or unusable browser/PDF inspection dependencies fail with
+installation guidance instead of silently skipping required coverage.
 
 CI uses the latest stable Go compiler; the release gate still checks that both that compiler and the module's minimum Go family are supported. Newly disclosed dependency vulnerabilities or an unsupported minimum Go version therefore fail the weekly run even without a source change. Scheduled runs use the default branch, can be delayed, and GitHub automatically disables schedules in public repositories after 60 days without repository activity; re-enable the workflow in Actions if that happens. See [GitHub's schedule documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
@@ -48,3 +52,13 @@ These checks complement the example-domain privacy guard; a clean secret scan do
 ## Generated documentation
 
 `make docs` updates the package table in `docs/architecture.md` using the repository's Go generator. `make docs-check` verifies that the table matches package comments without writing the file. Missing, duplicated or reversed region markers fail validation. No external documentation or workflow tool is required.
+
+This check covers only the declared generated region. Review prose against CLI
+help, implementation and tests, and check relative links separately. For changing
+source-derived values, prefer links to their source over copied limits or command
+inventories. Keep ADR decision context historical; use focused operational guides
+for current behavior. See [the documentation index](README.md).
+
+For source tags, Git identities, tap updates and installed-binary verification,
+read [releases](releases.md). A successful checkout build does not upgrade Homebrew
+or prove which executable is selected on `PATH`.

@@ -12,7 +12,7 @@ A template describes one kind of email from one sender: how to recognise it, whi
 
 ## The template stage
 
-The stage needs two independent checks to agree before anything is filed automatically: the fingerprint, and Jev choosing among the sender's template descriptions or "none".
+The stage needs two independent checks to agree before a match can be drafted for filing: the fingerprint, and Jev choosing among the sender's template descriptions or "none".
 
 | Outcome | When |
 |---|---|
@@ -45,6 +45,21 @@ A changed receipt layout can cause the fingerprint and model to disagree. Such m
 - **`file dismiss <n>... --reason <why>`** records the owner's decision not to file. It goes to the `filing` stage, beside `pending` and `saved`, so rerunning the template stage cannot bring the email back to the queue. Decisions first recorded as template verdicts were undone by exactly such a rerun.
 - **`templates check [--expect <manifest>]`** runs the fingerprint for free over stored mail. With `--expect`, it compares the result with an earlier manifest.
 - **`templates anchors --from <sender> [--subject <regexp>]`** lists the lines common to all of a sender's examples, a starting point for anchors.
+
+## Reviewing the queue and cleanup
+
+Run filing review before creating the final deletion plan. `file draft` changes
+local `filing:pending` state; policy needs explicit guards to protect it. An empty
+draft (exit 4, nothing to draft) does not mean the owner queue is empty: unmatched
+records and new kinds may still need review. Report newly arrived candidates
+separately from older unresolved items.
+
+Only a successfully verified `save --execute` records saved state. An extracted
+attachment, an existing destination file or a model match alone does not prove
+that a record was filed. Check rerun outcomes before approving deletion. Keep
+manifest numbers tied to the exact database/account used to create them; see
+[recovery](recovery.md) before working with an isolated mirror. Yahoo permits local
+review and extraction but refuses PDF save execution.
 
 ## Writing templates
 

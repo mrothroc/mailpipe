@@ -2,6 +2,12 @@
 
 Status: accepted technical foundation.
 
+This records the initial contract decision; references to future integration
+describe that point in development. Storage and Graph adoption are recorded in
+[ADR 0002](0002-account-bound-storage.md) and
+[ADR 0003](0003-graph-provider-integration.md). For current composition, see
+[architecture](../architecture.md).
+
 ## Context
 
 The current application uses Microsoft Graph through `pkg/mailsync`,
