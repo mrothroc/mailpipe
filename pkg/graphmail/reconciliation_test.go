@@ -144,6 +144,27 @@ func TestLegacyReconciliationEvidence(t *testing.T) {
 			} else if !reflect.DeepEqual(evidence, graphmail.LegacyEvidence{}) {
 				t.Fatalf("failed %s returned partial proof: %+v", kind, evidence)
 			}
+			expected := map[string]string{
+				"partial":       "phase=enumeration; category=authorization-http-403;",
+				"missing-value": "phase=enumeration; category=invalid-page;",
+				"null-value":    "phase=enumeration; category=invalid-page;",
+				"delta":         "phase=enumeration; category=invalid-page;",
+				"duplicate":     "phase=enumeration; category=duplicate-or-removed-record;",
+				"cycle":         "phase=enumeration; category=pagination-cycle;",
+				"metadata":      "phase=enumeration; category=incomplete-metadata;",
+				"null-metadata": "phase=enumeration; category=incomplete-metadata;",
+				"unknown-404":   "phase=inspection; category=not-found-http-404;",
+				"forbidden":     "phase=inspection; category=authorization-http-403;",
+				"vanished":      "phase=inspection; category=not-found-http-404;",
+				"appeared":      "phase=consistency; category=reference-appeared;",
+				"sender":        "phase=consistency; category=metadata-changed;",
+				"header":        "phase=consistency; category=metadata-changed;",
+				"folder":        "phase=consistency; category=precondition-changed;",
+				"changed":       "phase=consistency; category=precondition-changed;",
+			}[kind]
+			if expected != "" && (e == nil || !strings.Contains(e.Error(), expected)) {
+				t.Fatalf("missing branch-origin diagnostic for %s: %v", kind, e)
+			}
 		})
 	}
 }

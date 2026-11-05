@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"net/url"
+	"os"
 	"reflect"
 	"time"
 
@@ -74,8 +77,65 @@ func (e *ReconciliationError) Unwrap() error { return e.Cause }
 func reconciliationBlock(reason string) error {
 	return &ReconciliationError{Structural: true, Reason: reason}
 }
-func incompleteEvidence(err error) error {
-	return &ReconciliationError{Reason: "incomplete primary-mailbox evidence; resolve the read failure and retry a reconciliation preview", Cause: err}
+
+// phase and category are fixed labels chosen at the failing check, never
+// provider strings. The original cause stays available to programmatic callers.
+func incompleteEvidence(phase, category string, err error) error {
+	if category == "" {
+		category = reconciliationReadCategory(err)
+	}
+	return &ReconciliationError{Reason: "incomplete primary-mailbox evidence; phase=" + phase + "; category=" + category + "; resolve the read failure and retry a reconciliation preview", Cause: err}
+}
+
+// Classify only known error identities/types and allowlisted HTTP statuses.
+// Error messages, API codes, URLs and dynamic type names are never rendered.
+func reconciliationReadCategory(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, mailbox.ErrAccountMismatch):
+		return "account-mismatch"
+	}
+	var api *graph.APIError
+	if errors.As(err, &api) && api != nil {
+		switch api.Status {
+		case 401:
+			return "authorization-http-401"
+		case 403:
+			return "authorization-http-403"
+		case 404:
+			return "not-found-http-404"
+		case 410:
+			return "gone-http-410"
+		case 429:
+			return "throttled-http-429"
+		case 500, 502, 503, 504:
+			return "server-response"
+		default:
+			return "unknown-api-response"
+		}
+	}
+	var limit *graph.ResponseLimitError
+	var syntax *json.SyntaxError
+	var shape *json.UnmarshalTypeError
+	var request *url.Error
+	var network *net.OpError
+	switch {
+	case errors.As(err, &limit):
+		return "response-limit"
+	case errors.As(err, &syntax), errors.As(err, &shape):
+		return "malformed-response"
+	case errors.Is(err, mailbox.ErrStaleIdentity):
+		return "stale-identity"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "read-failure"
+	case errors.As(err, &request), errors.As(err, &network):
+		return "transport-read-failure"
+	default:
+		return "unknown-read-failure"
+	}
 }
 
 const legacyMessageLimit = 1000000
@@ -114,13 +174,13 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 	query := url.Values{"$select": {selectFields}, "$top": {"200"}}
 	for path != "" {
 		if e := ctx.Err(); e != nil {
-			return out, incompleteEvidence(e)
+			return out, incompleteEvidence("enumeration", "", e)
 		}
 		if out.Pages >= pageLimit {
 			return out, &ReconciliationError{Structural: true, Reason: "primary-mailbox enumeration page limit reached; preserve the mirror and request a reviewed resource plan"}
 		}
 		if links[path] {
-			return out, incompleteEvidence(errors.New("cyclic enumeration"))
+			return out, incompleteEvidence("enumeration", "pagination-cycle", errors.New("cyclic enumeration"))
 		}
 		links[path] = true
 		var page struct {
@@ -129,43 +189,43 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 			Delta json.RawMessage `json:"@odata.deltaLink"`
 		}
 		if e := p.g.Get(ctx, path, query, &page); e != nil {
-			return out, incompleteEvidence(e)
+			return out, incompleteEvidence("enumeration", "", e)
 		}
 		if len(page.Value) == 0 || string(page.Value) == "null" || len(page.Delta) != 0 {
-			return out, incompleteEvidence(errors.New("invalid enumeration page"))
+			return out, incompleteEvidence("enumeration", "invalid-page", errors.New("invalid enumeration page"))
 		}
 		var records []json.RawMessage
 		if e := json.Unmarshal(page.Value, &records); e != nil || records == nil {
-			return out, incompleteEvidence(errors.New("invalid enumeration records"))
+			return out, incompleteEvidence("enumeration", "invalid-records", errors.New("invalid enumeration records"))
 		}
 		out.Pages++
 		for _, raw := range records {
 			var w wireMessage
 			fields := map[string]json.RawMessage{}
 			if e := json.Unmarshal(raw, &w); e != nil {
-				return out, incompleteEvidence(e)
+				return out, incompleteEvidence("enumeration", "malformed-response", e)
 			}
 			if e := json.Unmarshal(raw, &fields); e != nil {
-				return out, incompleteEvidence(e)
+				return out, incompleteEvidence("enumeration", "malformed-response", e)
 			}
 			for _, key := range []string{"id", "parentFolderId", "internetMessageId", "subject", "toRecipients", "ccRecipients", "receivedDateTime", "hasAttachments", "isRead", "bodyPreview"} {
 				if len(fields[key]) == 0 || string(fields[key]) == "null" {
-					return out, incompleteEvidence(errors.New("missing or null selected metadata"))
+					return out, incompleteEvidence("enumeration", "incomplete-metadata", errors.New("missing or null selected metadata"))
 				}
 			}
 
 			if e := ctx.Err(); e != nil {
-				return out, incompleteEvidence(e)
+				return out, incompleteEvidence("enumeration", "", e)
 			}
 			if out.Observed >= messageLimit {
 				return out, &ReconciliationError{Structural: true, Reason: "primary-mailbox enumeration message limit reached; preserve the mirror and request a reviewed resource plan"}
 			}
 			if len(w.Removed) != 0 || seen[w.ID] {
-				return out, incompleteEvidence(errors.New("duplicate, removed or oversized enumeration"))
+				return out, incompleteEvidence("enumeration", "duplicate-or-removed-record", errors.New("duplicate, removed or oversized enumeration"))
 			}
 			state, e := p.state(w)
 			if e != nil {
-				return out, incompleteEvidence(e)
+				return out, incompleteEvidence("enumeration", "invalid-message-state", e)
 			}
 			seen[w.ID] = true
 			out.Observed++
@@ -177,7 +237,7 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		query = nil
 		if len(page.Next) != 0 {
 			if e := json.Unmarshal(page.Next, &path); e != nil || path == "" {
-				return out, incompleteEvidence(errors.New("invalid nextLink"))
+				return out, incompleteEvidence("enumeration", "invalid-pagination", errors.New("invalid nextLink"))
 			}
 		}
 	}
@@ -187,14 +247,14 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 	}
 	states, failures, e := p.InspectBatch(ctx, inspectRefs)
 	if e != nil {
-		return out, incompleteEvidence(e)
+		return out, incompleteEvidence("inspection", "", e)
 	}
 	if len(states) != len(refs) || len(failures) != len(refs) {
-		return out, incompleteEvidence(errors.New("incomplete original inspection"))
+		return out, incompleteEvidence("inspection", "incomplete-results", errors.New("incomplete original inspection"))
 	}
 	for i, r := range refs {
 		if e := ctx.Err(); e != nil {
-			return out, incompleteEvidence(e)
+			return out, incompleteEvidence("inspection", "", e)
 		}
 		state, e := states[i], failures[i]
 		observed, found := listed[string(r.Ref.MessageID)]
@@ -204,16 +264,16 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 				out.Unavailable[r.N] = true
 				continue
 			}
-			return out, incompleteEvidence(e)
+			return out, incompleteEvidence("inspection", "", e)
 		}
 		if !found {
-			return out, incompleteEvidence(errors.New("reference appeared after enumeration"))
+			return out, incompleteEvidence("consistency", "reference-appeared", errors.New("reference appeared after enumeration"))
 		}
 		if !reflect.DeepEqual(observed.Metadata, state.Metadata) {
-			return out, incompleteEvidence(errors.New("metadata changed after enumeration"))
+			return out, incompleteEvidence("consistency", "metadata-changed", errors.New("metadata changed after enumeration"))
 		}
 		if e = mailbox.CheckPrecondition(p.account.ID, observed, state); e != nil {
-			return out, incompleteEvidence(e)
+			return out, incompleteEvidence("consistency", "precondition-changed", e)
 		}
 		expected := mailbox.State{Ref: r.Ref, Metadata: mailbox.Metadata{InternetMessageID: r.InternetMessageID, Sender: mailbox.Address{Address: r.Sender}}, Memberships: state.Memberships}
 		if e = mailbox.CheckPrecondition(p.account.ID, expected, state); e != nil {
@@ -225,7 +285,7 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		return out, reconciliationBlock("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference or ask the owner for an approved evidence policy")
 	}
 	if e := ctx.Err(); e != nil {
-		return out, incompleteEvidence(e)
+		return out, incompleteEvidence("completion", "", e)
 	}
 	out.Finished = time.Now().UTC()
 	return out, nil
