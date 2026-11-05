@@ -29,7 +29,11 @@ coverage and observation times, counts, and **every message disposition**:
   sender passed independent inspection. Review `original_folder`, the resolved
   `original_memberships`, the current memberships in `state`, and
   `membership_changed`. A collection change is explicit old-to-current evidence,
-  not an identity replacement; every change requires owner review.
+  not an identity replacement; every change requires owner review. If
+  `recipient_casing_changed` is true, compare the exact `enumerated_state` with
+  inspection `state`. Only indexed recipient address casing may differ; names,
+  order, duplicates and every other metadata field remain strict. Review the
+  complete pair, including private overflow output.
 - `unavailable`: a completed enumeration did not observe this exact ID, and a
   subsequent exact lookup returned Graph's recognized item-not-found response.
   The original row remains history, with no invented current membership/revision.
@@ -44,7 +48,7 @@ incomplete run produces no executable proposal digest.
 
 Only if the owner knows that **all** history belongs to the displayed account,
 including every unavailable row, and approves every displayed old-to-current
-membership change, obtain specific approval for local attribution:
+membership change and recipient casing pair, obtain specific approval for local attribution:
 
 ```text
 mailpipe account reconcile --execute --confirm-account <account> --confirm-history <history-digest> --confirm-reconciliation <reconciliation-digest>
@@ -127,15 +131,21 @@ and [immutable-ID guidance](https://learn.microsoft.com/en-us/graph/outlook-immu
 A found original must match its exact immutable reference, header and sender.
 A different collection is accepted only as explicit reviewed state in this
 reconciliation path. Enumeration and inspection must agree on current metadata,
-membership and any recorded revision. Strict `account bind`, ordinary sync and action-plan
+membership and any recorded revision, except the reviewed same-ID recipient
+address casing rule. It uses Unicode simple case folding (`strings.EqualFold`)
+without trimming, sorting, alias expansion or Unicode normalization. It does
+not establish RFC mailbox equivalence. Original spellings remain in both states;
+no address is globally lowercased. Strict `account bind`, ordinary sync and action-plan
 preconditions retain their existing comparisons. An unavailable historical
 source-folder mapping remains blocked; no name or collection is guessed.
 
-New proposals and receipts use JSON version 2 and a separate digest domain.
+New proposals and receipts use JSON version 3 and a separate digest domain.
 The proposal covers original and current membership evidence for every live
-original alongside the account, complete source digest, folder mappings and
-all dispositions. A version-1 pending proposal cannot execute a new binding;
-obtain a fresh preview. Committed version-1 receipts remain readable offline and
+original, plus both exact observations for accepted casing differences, alongside
+the account, complete source digest, folder mappings and all dispositions.
+Changing either spelling changes the proposal digest even when folding still
+matches. A version-1 or version-2 pending proposal cannot execute a new binding;
+obtain a fresh preview. Committed version-1 and version-2 receipts remain readable offline and
 retain their exact-confirmation routing-repair behavior. They are not rewritten,
 reinterpreted as new evidence or replayed through binding. See the
 [exact-ID reconciliation decision](adr/0010-exact-id-reconciliation.md).
@@ -162,7 +172,7 @@ and immutable-ID preference.
 
 The [schema and migration implementation](../pkg/store/migration.go) defines the
 current version and recognized upgrade paths. The existing reconciliation
-receipt tables use the verified backup/migration mechanism; the version-2 JSON
+receipt tables use the verified backup/migration mechanism; the version-3 JSON
 review format requires no schema change. Unknown shapes, extensions and future
 versions remain refused. Ordinary bound stores gain empty
 receipt tables without a new attribution. Older binaries refuse newer schemas.

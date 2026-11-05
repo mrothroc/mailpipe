@@ -239,7 +239,7 @@ func TestReconciliationTransactionFailuresRollBack(t *testing.T) {
 			f := &failSQL{sqlAccess: conn, needle: needle}
 			bound := &AccountStore{account: a}
 			e = immediate(ctx, f, func(q sqlAccess) error {
-				return bound.bindLegacyTransaction(ctx, q, p, proof, evidence.Unavailable, &legacyReconciliationRequest{receipt: receipt}, "invented-backup", p.Digest())
+				return bound.bindLegacyTransaction(ctx, q, p, proof, evidence.Unavailable, &legacyReconciliationRequest{receipt: receipt, evidence: ownReconciliation(evidence), confirmation: receipt.Digest}, "invented-backup", p.Digest())
 			})
 			if e == nil || !f.fired {
 				t.Fatalf("failure not exercised: %v %v", e, f.fired)

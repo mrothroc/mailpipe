@@ -747,6 +747,8 @@ func bindLegacy(ctx context.Context, path string, account mailbox.Account, p Leg
 		var evidence LegacyReconciliation
 		evidence, e = reconciliation.verifier.ReconcileLegacy(ctx, account, p)
 		if e == nil {
+			evidence = ownReconciliation(evidence)
+			reconciliation.evidence = evidence
 			reconciliation.receipt, e = ReviewLegacyReconciliation(account, authoritative, evidence)
 		}
 		if e == nil && reconciliation.receipt.Digest != reconciliation.confirmation {
@@ -801,8 +803,12 @@ func bindLegacy(ctx context.Context, path string, account mailbox.Account, p Leg
 		return nil, stale("legacy inventory changed during verification")
 	}
 	a := &AccountStore{account: account}
+	transactionPreparation := p
+	if reconciliation != nil {
+		transactionPreparation = authoritative
+	}
 	e = immediate(ctx, conn, func(q sqlAccess) error {
-		return a.bindLegacyTransaction(ctx, q, p, proof, unavailable, reconciliation, backupPath, backupDigest)
+		return a.bindLegacyTransaction(ctx, q, transactionPreparation, proof, unavailable, reconciliation, backupPath, backupDigest)
 	})
 	conn.Close()
 	if e != nil {
@@ -824,6 +830,21 @@ func (a *AccountStore) bindLegacyTransaction(ctx context.Context, q sqlAccess, p
 	}
 	if digest != p.digest {
 		return stale("legacy inventory changed before binding")
+	}
+	if reconciliation != nil {
+		if !reconciliation.evidence.Verification.HistoricalAttributionConfirmed {
+			return errors.New("store: historical attribution confirmation required before binding")
+		}
+		reviewed, err := ReviewLegacyReconciliation(account, p, reconciliation.evidence)
+		if err != nil {
+			return err
+		}
+		if reviewed.Digest != reconciliation.confirmation || reviewed.Digest != reconciliation.receipt.Digest {
+			return stale("reconciliation changed before binding")
+		}
+		reconciliation.receipt = reviewed
+		proof = reconciliation.evidence.Verification
+		unavailable = reconciliation.evidence.Unavailable
 	}
 	if _, e = q.ExecContext(ctx, "insert into store_binding values(1,?,?,1,?)", account.ID, account.ProviderID, time.Now().UTC().Format(time.RFC3339)); e != nil {
 		return e
