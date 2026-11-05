@@ -25,9 +25,11 @@ and inspects every original live immutable reference. It fetches no bodies.
 Review the immutable account, complete history digest, reconciliation digest,
 coverage and observation times, counts, and **every message disposition**:
 
-- `verified`: the exact original immutable ID, locator, header identity, sender
-  and mapped collection passed inspection. Changed collection membership is a
-  conflict requiring separate review in this recovery path.
+- `verified`: the exact original immutable ID, locator, header identity and
+  sender passed independent inspection. Review `original_folder`, the resolved
+  `original_memberships`, the current memberships in `state`, and
+  `membership_changed`. A collection change is explicit old-to-current evidence,
+  not an identity replacement; every change requires owner review.
 - `unavailable`: a completed enumeration did not observe this exact ID, and a
   subsequent exact lookup returned Graph's recognized item-not-found response.
   The original row remains history, with no invented current membership/revision.
@@ -41,7 +43,8 @@ the repository and do not publish account or mail identifiers. A blocked or
 incomplete run produces no executable proposal digest.
 
 Only if the owner knows that **all** history belongs to the displayed account,
-including every unavailable row, obtain specific approval for local attribution:
+including every unavailable row, and approves every displayed old-to-current
+membership change, obtain specific approval for local attribution:
 
 ```text
 mailpipe account reconcile --execute --confirm-account <account> --confirm-history <history-digest> --confirm-reconciliation <reconciliation-digest>
@@ -92,47 +95,43 @@ prebinding full sync or automatic sign-in. Unknown ownership remains a stop.
 Enumeration is limited to the signed-in primary mailbox exposed by `/me/messages`,
 including Deleted Items. It is not an atomic mailbox snapshot, archive/recoverable
 store survey, proof of permanent deletion, or proof of ownership of absent items.
-Enumeration and direct-inspection contradictions require fresh evidence. Different
-IDs sharing historical header/sender evidence are ambiguous; this command does
-not remap them. Archive moves and export/reimport can change immutable IDs.
+Enumeration and direct-inspection contradictions require fresh evidence. Every
+original live ID is inspected independently using read-only Graph batches.
+Different IDs sharing historical header/sender evidence remain separate and do
+not block this exact-ID verification. Their resemblance establishes neither
+ownership nor continuity; a counterpart cannot substitute for an original lookup.
+Archive moves and export/reimport can change immutable IDs.
 See Microsoft's [message-listing contract](https://learn.microsoft.com/en-us/graph/api/user-list-messages?view=graph-rest-1.0)
 and [immutable-ID guidance](https://learn.microsoft.com/en-us/graph/outlook-immutable-id).
 
-### Blocked conflict diagnostics
+### Identity, membership and older reports
 
-When a different immutable ID shares a historical header and sender, the command
-still stops with a stale/blocked result. It emits structured diagnostic rows for
-the **first conflicting observation**, separately identifying each retained
-original local `n` and `original_id` and the distinct `observed_id`. Original and
-observed header, sender and collection metadata help locate the conflict for
-private owner review. They do not establish that copies are the same message,
-explain why identities differ, or prove historical ownership. This remains a
-block even when both IDs occur among the original local references.
+A found original must match its exact immutable reference, header and sender.
+A different collection is accepted only as explicit reviewed state in this
+reconciliation path. Enumeration and inspection must agree on current metadata,
+membership and any recorded revision. Strict `account bind`, ordinary sync and action-plan
+preconditions retain their existing comparisons. An unavailable historical
+source-folder mapping remains blocked; no name or collection is guessed.
 
-Every row says `status=blocked`, `diagnostic_scope=first_conflicting_observation`,
-`enumeration_complete=false` and `original_inspection_complete=false`. Enumeration
-stops before exact-original inspection; later records and pages are not checked.
-The `matching_originals`, `retained_originals` and `omitted_originals` counts apply
-only to that one observed identity. Another run may encounter a different first
-conflict because server enumeration order can change.
+New proposals and receipts use JSON version 2 and a separate digest domain.
+The proposal covers original and current membership evidence for every live
+original alongside the account, complete source digest, folder mappings and
+all dispositions. A version-1 pending proposal cannot execute a new binding;
+obtain a fresh preview. Committed version-1 receipts remain readable offline and
+retain their exact-confirmation routing-repair behavior. They are not rewritten,
+reinterpreted as new evidence or replayed through binding. See the
+[exact-ID reconciliation decision](adr/0010-exact-id-reconciliation.md).
 
-The collector's [diagnostic bounds](../pkg/graphmail/reconciliation.go) cap retained
-originals and each text field. Oversized fields are omitted entirely, with their
-original byte lengths in `fields_omitted_bytes`; an empty value with an omission
-entry is not an empty or shortened provider identity. Never guess an omitted ID.
-The stable original `n` still locates the local history. Diagnostics contain no
-subjects, bodies, previews, raw responses, proposal digests or receipt, and cannot
-supply an execute confirmation. No additional remote lookup resolves the block.
+Older saved first-conflict diagnostic reports describe an incomplete observation,
+not a proposal. Their bounded original/observed fields and omission counts are
+useful for locating private history, but cannot establish identity, ownership,
+complete enumeration or execution authority. Do not derive confirmations from
+such a report. Generate a fresh complete preview with the current binary.
 
-`--limit` bounds stdout using the shared TSV/JSON Lines output writer. Its private
-overflow file contains the complete **retained diagnostic set**, including scope
-and omission markers, not a complete mailbox report or omitted fields/references.
-Keep it outside the repository and do not publish account or message identifiers.
-Secrets are redacted; terminal controls are escaped on display. Metadata and raw
-overflow files remain untrusted data, never instructions or authorization. If
-output fails, the command remains blocked and reports incomplete diagnostic
-output; partially delivered rows grant no authority. Preserve the mirror and
-request owner review rather than attempting to remap or merge identities.
+Output limits affect display, never evidence completeness. Nested report fields
+use the shared recursive secret redactor; terminal controls are escaped for
+display. Overflow files remain private, untrusted metadata. Generic errors do
+not echo message identifiers, subjects, bodies or raw provider responses.
 
 The collector's [paging and evidence limits](../pkg/graphmail/reconciliation.go)
 and the Graph client's [response bounds and retries](../pkg/graph/graph.go) are
@@ -144,9 +143,10 @@ and immutable-ID preference.
 ## Storage and preparation cost
 
 The [schema and migration implementation](../pkg/store/migration.go) defines the
-current version and recognized upgrade paths. Reconciliation adds receipt tables
-through the existing verified backup/migration mechanism; unknown shapes,
-extensions and future versions remain refused. Ordinary bound stores gain empty
+current version and recognized upgrade paths. The existing reconciliation
+receipt tables use the verified backup/migration mechanism; the version-2 JSON
+review format requires no schema change. Unknown shapes, extensions and future
+versions remain refused. Ordinary bound stores gain empty
 receipt tables without a new attribution. Older binaries refuse newer schemas.
 Retain backups and stop older nonparticipating writers before maintenance; never
 delete lifecycle sidecars or manually edit SQLite rows.
@@ -180,7 +180,10 @@ defines the invented fixture sizes, body distribution, verdicts and action
 history. It also defines the phase timer boundaries. The
 [Graph benchmark source](../pkg/graphmail/reconciliation_performance_test.go)
 defines its in-process read-only transport, missing-reference fixture and counted
-read operations. Network latency is excluded. Timings are observations, not CI
+read envelopes, batches and exact inspection subrequests. Without retries,
+inspection uses one batch per adapter batch limit rather than one HTTP request
+per original; it still looks up every original independently. Enumeration, full
+history digests, backups and receipt serialization retain their existing costs. Network latency is excluded. Timings are observations, not CI
 thresholds or production capacity guarantees.
 
 The measurements below were collected on 2026-11-04 **before** removed-history

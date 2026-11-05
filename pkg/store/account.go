@@ -776,6 +776,12 @@ func bindLegacy(ctx context.Context, path string, account mailbox.Account, p Leg
 		if !ok || scope.Validate(account.ID) != nil {
 			return nil, stale("legacy collection mapping is missing")
 		}
+		if reconciliation != nil {
+			if _, _, e = reconciliationState(account.ID, m, scope, state); e != nil {
+				return nil, e
+			}
+			continue
+		}
 		expected := mailbox.State{Ref: mailbox.MessageRef{AccountID: account.ID, MessageID: mailbox.MessageID(m.GraphID), Locator: mailbox.Locator(m.GraphID)}, Metadata: mailbox.Metadata{InternetMessageID: m.InternetMessageID, Sender: mailbox.Address{Address: m.Sender}}, Memberships: []mailbox.Membership{{Collection: scope}}}
 		if e = mailbox.CheckPrecondition(account.ID, expected, state); e != nil {
 			return nil, e

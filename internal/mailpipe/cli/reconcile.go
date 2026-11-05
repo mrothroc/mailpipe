@@ -205,12 +205,40 @@ func reconciliationOutput(agent *agentio.AgentIO, status string, r store.LegacyR
 		counts[i.Disposition]++
 	}
 	items := append([]store.LegacyReconciliationItem{{Disposition: "summary"}}, r.Items...)
-	return agentio.Tabled(agent, []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "n", "disposition", "original_id", "reason", "state", "verified", "unavailable", "historical"}, items, func(i store.LegacyReconciliationItem) []string {
-		state, _ := json.Marshal(i.State)
-		return []string{status, string(r.Account.ID), string(r.Account.ProviderID), r.SourceDigest, r.Digest, itoa(int(i.N)), i.Disposition, i.OriginalID, i.Reason, string(state), itoa(counts["verified"]), itoa(counts["unavailable"]), itoa(counts["historical"])}
-	}, func(i store.LegacyReconciliationItem) map[string]any {
-		return map[string]any{"verified": counts["verified"], "unavailable": counts["unavailable"], "historical": counts["historical"], "status": status, "account": r.Account.ID, "provider": r.Account.ProviderID, "source_digest": r.SourceDigest, "reconciliation_digest": r.Digest, "coverage": r.Coverage, "started": r.Started, "finished": r.Finished, "pages": r.Pages, "observed": r.Observed, "n": i.N, "disposition": i.Disposition, "original_id": i.OriginalID, "reason": i.Reason, "original_removed": i.Removed, "state": i.State, "history_confirmed": r.HistoricalAttributionConfirmed, "backup": r.Backup, "backup_digest": r.BackupDigest}
-	})
+	rows := make([]map[string]any, 0, len(items))
+	for _, i := range items {
+		// Convert nested DTOs before Tabled so shared recursive redaction reaches
+		// every metadata, identity and collection string, including overflow JSON.
+		raw, err := json.Marshal(i)
+		if err != nil {
+			return err
+		}
+		var nested map[string]any
+		if err = json.Unmarshal(raw, &nested); err != nil {
+			return err
+		}
+		rows = append(rows, map[string]any{
+			"verified": counts["verified"], "unavailable": counts["unavailable"], "historical": counts["historical"], "status": status,
+			"version": r.Version, "account": string(r.Account.ID), "provider": string(r.Account.ProviderID), "source_digest": r.SourceDigest, "reconciliation_digest": r.Digest,
+			"coverage": r.Coverage, "started": r.Started.Format(time.RFC3339Nano), "finished": r.Finished.Format(time.RFC3339Nano), "pages": r.Pages, "observed": r.Observed,
+			"n": i.N, "disposition": i.Disposition, "original_id": i.OriginalID, "reason": i.Reason, "original_removed": i.Removed,
+			"original_folder": i.OriginalFolder, "original_memberships": nested["original_memberships"], "membership_changed": i.MembershipChanged, "state": nested["state"],
+			"history_confirmed": r.HistoricalAttributionConfirmed, "backup": r.Backup, "backup_digest": r.BackupDigest,
+		})
+	}
+	header := []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "state", "verified", "unavailable", "historical"}
+	return agentio.Tabled(agent, header, rows, func(row map[string]any) []string {
+		values := make([]string, len(header))
+		for j, key := range header {
+			if key == "state" || key == "original_memberships" {
+				raw, _ := json.Marshal(row[key])
+				values[j] = string(raw)
+			} else {
+				values[j] = fmt.Sprint(row[key])
+			}
+		}
+		return values
+	}, func(row map[string]any) map[string]any { return row })
 }
 func newReconcileCommand(deps Deps) *cobra.Command {
 	cmd := newAgentCommand("reconcile", "Review unavailable Graph references and explicitly attribute preserved history", cobra.NoArgs, func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
@@ -301,7 +329,7 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 			if _, e = verifier.ReconcileLegacy(ctx, p.Account(), prep); e != nil {
 				return reconciliationFailureOutput(agent, e)
 			}
-			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
+			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition and old-to-current membership change, and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
 		}
 		return reconciliationOutput(agent, status, verifier.report)
 	})

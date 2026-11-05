@@ -34,12 +34,15 @@ type LegacyReconciliationVerifier interface {
 }
 
 type LegacyReconciliationItem struct {
-	N           int64          `json:"n"`
-	OriginalID  string         `json:"original_id"`
-	Removed     bool           `json:"original_removed"`
-	Disposition string         `json:"disposition"`
-	Reason      string         `json:"reason,omitempty"`
-	State       *mailbox.State `json:"state,omitempty"`
+	OriginalFolder      string               `json:"original_folder,omitempty"`
+	OriginalMemberships []mailbox.Membership `json:"original_memberships,omitempty"`
+	MembershipChanged   bool                 `json:"membership_changed"`
+	N                   int64                `json:"n"`
+	OriginalID          string               `json:"original_id"`
+	Removed             bool                 `json:"original_removed"`
+	Disposition         string               `json:"disposition"`
+	Reason              string               `json:"reason,omitempty"`
+	State               *mailbox.State       `json:"state,omitempty"`
 }
 
 // LegacyReconciliationReceipt records local attribution authority and scoped
@@ -83,7 +86,7 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 	if len(v.Unavailable) > 0 && len(v.Verification.States) == 0 {
 		return r, stale("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference or ask the owner for an approved evidence policy")
 	}
-	r = LegacyReconciliationReceipt{Version: 1, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
+	r = LegacyReconciliationReceipt{Version: 2, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
 	for _, m := range p.Live {
 		if m.GraphID == "" {
 			return LegacyReconciliationReceipt{}, stale("historical immutable identity is missing")
@@ -97,7 +100,7 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 		if verified == unavailable {
 			return LegacyReconciliationReceipt{}, errors.New("store: overlapping or missing reconciliation disposition")
 		}
-		item := LegacyReconciliationItem{N: m.N, OriginalID: m.GraphID}
+		item := LegacyReconciliationItem{N: m.N, OriginalID: m.GraphID, OriginalFolder: m.Folder, OriginalMemberships: []mailbox.Membership{{Collection: scope}}}
 		if unavailable {
 			if reason != LegacyUnavailable {
 				return LegacyReconciliationReceipt{}, errors.New("store: unavailable reference lacks complete scoped evidence")
@@ -105,11 +108,11 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 			item.Disposition = "unavailable"
 			item.Reason = reason
 		} else {
-			expected := mailbox.State{Ref: mailbox.MessageRef{AccountID: a.ID, MessageID: mailbox.MessageID(m.GraphID), Locator: mailbox.Locator(m.GraphID)}, Metadata: mailbox.Metadata{InternetMessageID: m.InternetMessageID, Sender: mailbox.Address{Address: m.Sender}}, Memberships: []mailbox.Membership{{Collection: scope}}}
-			if e := mailbox.CheckPrecondition(a.ID, expected, state); e != nil {
+			var e error
+			state, item.MembershipChanged, e = reconciliationState(a.ID, m, scope, state)
+			if e != nil {
 				return LegacyReconciliationReceipt{}, e
 			}
-			state = canonicalState(state)
 			item.Disposition = "verified"
 			item.State = &state
 		}
@@ -126,13 +129,33 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 		Source, Coverage string
 		Folders          map[string]mailbox.CollectionRef
 		Items            []LegacyReconciliationItem
-	}{"mailpipe-legacy-reconciliation-v1", a, p.digest, v.Coverage, r.Folders, r.Items})
+	}{"mailpipe-legacy-reconciliation-v2", a, p.digest, v.Coverage, r.Folders, r.Items})
 	if e != nil {
 		return LegacyReconciliationReceipt{}, e
 	}
 	h := sha256.Sum256(raw)
 	r.Digest = hex.EncodeToString(h[:])
 	return r, nil
+}
+
+// reconciliationState separates the historical collection from independently
+// observed current membership. Only reviewed reconciliation uses this comparison;
+// strict binding and reviewed actions retain their full membership precondition.
+func reconciliationState(account mailbox.AccountID, original Message, old mailbox.CollectionRef, current mailbox.State) (mailbox.State, bool, error) {
+	if err := old.Validate(account); err != nil {
+		return mailbox.State{}, false, err
+	}
+	if err := current.Validate(account); err != nil {
+		return mailbox.State{}, false, err
+	}
+	if len(current.Memberships) != 1 {
+		return mailbox.State{}, false, stale("complete current Graph collection required")
+	}
+	expected := mailbox.State{Ref: mailbox.MessageRef{AccountID: account, MessageID: mailbox.MessageID(original.GraphID), Locator: mailbox.Locator(original.GraphID)}, Metadata: mailbox.Metadata{InternetMessageID: original.InternetMessageID, Sender: mailbox.Address{Address: original.Sender}}, Memberships: current.Memberships}
+	if err := mailbox.CheckPrecondition(account, expected, current); err != nil {
+		return mailbox.State{}, false, err
+	}
+	return canonicalState(current), current.Memberships[0].Collection != old, nil
 }
 
 type legacyReconciliationRequest struct {

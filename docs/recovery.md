@@ -63,7 +63,9 @@ session's staging or weakens lifecycle locks.
 A historical Graph mirror can require attribution before sync while strict
 `account bind` refuses a stored live reference that is now unavailable. Use
 `mailpipe account reconcile` in that same private context to preview complete
-read-only evidence and review every disposition. With specific owner approval,
+read-only evidence and review every disposition and old-to-current membership
+change. Each original immutable ID is verified independently; matching headers
+on a different ID never replace it or transfer history. With specific owner approval,
 its execute path requires exact account, full-history and reconciliation digests.
 See [reviewed Graph reconciliation](graph-reconciliation.md) for the supported
 workflow, evidence limits, preserved history, backups and partial routing recovery.

@@ -138,7 +138,7 @@ func TestLegacyReviewedRecoveryAndSync(t *testing.T) {
 }
 
 func TestReconciliationErrorsDistinguishIncompleteAndStructuralEvidence(t *testing.T) {
-	for _, kind := range []string{"partial", "no-anchor", "ambiguous", "wrong-account"} {
+	for _, kind := range []string{"partial", "no-anchor", "identity-conflict", "wrong-account"} {
 		t.Run(kind, func(t *testing.T) {
 			e := newEnv(t)
 			s, err := store.Open(e.db)
@@ -157,8 +157,8 @@ func TestReconciliationErrorsDistinguishIncompleteAndStructuralEvidence(t *testi
 			case "no-anchor":
 				e.graph.server = map[string]serverMsg{}
 				e.graph.pages = map[string][]graph.Page{}
-			case "ambiguous":
-				e.graph.server["other"] = serverMsg{"inbox", "<missing@example.org>", "history@example.org"}
+			case "identity-conflict":
+				e.graph.server["g1"] = serverMsg{"inbox", "<different@example.org>", "info@campaign.example.org"}
 			case "wrong-account":
 				cfg, err := config.Load(config.DefaultPath())
 				if err != nil {
@@ -177,9 +177,7 @@ func TestReconciliationErrorsDistinguishIncompleteAndStructuralEvidence(t *testi
 			} else if code != agentio.ExitStale {
 				t.Fatalf("structural block: %d %s", code, stderr)
 			}
-			if kind == "ambiguous" {
-				conflictJSONRows(t, out)
-			} else if out != "" {
+			if out != "" {
 				t.Fatalf("incomplete proposal leaked: %s", out)
 			}
 			if strings.Contains(stderr, "sync --full") {

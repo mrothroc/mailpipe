@@ -105,8 +105,9 @@ func (w *wireMessage) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 	w.present = make(map[string]bool, len(fields))
-	for key := range fields {
-		w.present[key] = true
+	for key, value := range fields {
+		// A selected null is incomplete evidence, not a valid zero value.
+		w.present[key] = string(value) != "null"
 	}
 	return nil
 }
