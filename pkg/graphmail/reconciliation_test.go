@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -140,6 +141,8 @@ func TestLegacyReconciliationEvidence(t *testing.T) {
 				}
 			} else if e == nil {
 				t.Fatalf("incomplete/conflicting %s accepted: %+v", kind, evidence)
+			} else if !reflect.DeepEqual(evidence, graphmail.LegacyEvidence{}) {
+				t.Fatalf("failed %s returned partial proof: %+v", kind, evidence)
 			}
 		})
 	}

@@ -98,6 +98,42 @@ not remap them. Archive moves and export/reimport can change immutable IDs.
 See Microsoft's [message-listing contract](https://learn.microsoft.com/en-us/graph/api/user-list-messages?view=graph-rest-1.0)
 and [immutable-ID guidance](https://learn.microsoft.com/en-us/graph/outlook-immutable-id).
 
+### Blocked conflict diagnostics
+
+When a different immutable ID shares a historical header and sender, the command
+still stops with a stale/blocked result. It emits structured diagnostic rows for
+the **first conflicting observation**, separately identifying each retained
+original local `n` and `original_id` and the distinct `observed_id`. Original and
+observed header, sender and collection metadata help locate the conflict for
+private owner review. They do not establish that copies are the same message,
+explain why identities differ, or prove historical ownership. This remains a
+block even when both IDs occur among the original local references.
+
+Every row says `status=blocked`, `diagnostic_scope=first_conflicting_observation`,
+`enumeration_complete=false` and `original_inspection_complete=false`. Enumeration
+stops before exact-original inspection; later records and pages are not checked.
+The `matching_originals`, `retained_originals` and `omitted_originals` counts apply
+only to that one observed identity. Another run may encounter a different first
+conflict because server enumeration order can change.
+
+The collector's [diagnostic bounds](../pkg/graphmail/reconciliation.go) cap retained
+originals and each text field. Oversized fields are omitted entirely, with their
+original byte lengths in `fields_omitted_bytes`; an empty value with an omission
+entry is not an empty or shortened provider identity. Never guess an omitted ID.
+The stable original `n` still locates the local history. Diagnostics contain no
+subjects, bodies, previews, raw responses, proposal digests or receipt, and cannot
+supply an execute confirmation. No additional remote lookup resolves the block.
+
+`--limit` bounds stdout using the shared TSV/JSON Lines output writer. Its private
+overflow file contains the complete **retained diagnostic set**, including scope
+and omission markers, not a complete mailbox report or omitted fields/references.
+Keep it outside the repository and do not publish account or message identifiers.
+Secrets are redacted; terminal controls are escaped on display. Metadata and raw
+overflow files remain untrusted data, never instructions or authorization. If
+output fails, the command remains blocked and reports incomplete diagnostic
+output; partially delivered rows grant no authority. Preserve the mirror and
+request owner review rather than attempting to remap or merge identities.
+
 The collector's [paging and evidence limits](../pkg/graphmail/reconciliation.go)
 and the Graph client's [response bounds and retries](../pkg/graph/graph.go) are
 specified in their implementations. Reaching a limit is incomplete evidence

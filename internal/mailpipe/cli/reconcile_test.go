@@ -177,7 +177,12 @@ func TestReconciliationErrorsDistinguishIncompleteAndStructuralEvidence(t *testi
 			} else if code != agentio.ExitStale {
 				t.Fatalf("structural block: %d %s", code, stderr)
 			}
-			if out != "" || strings.Contains(stderr, "sync --full") {
+			if kind == "ambiguous" {
+				conflictJSONRows(t, out)
+			} else if out != "" {
+				t.Fatalf("incomplete proposal leaked: %s", out)
+			}
+			if strings.Contains(stderr, "sync --full") {
 				t.Fatalf("incomplete proposal or loop hint leaked: %s %s", out, stderr)
 			}
 			s, err = store.Open(e.db)
