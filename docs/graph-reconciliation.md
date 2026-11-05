@@ -88,6 +88,24 @@ pages, unsafe or cyclic pagination, duplicates and exceeded safety limits never
 become absence evidence. Transient failures report a read-failure result: resolve
 the cause and retry a preview. Structural conflicts report a stale/blocked result:
 preserve the mirror and request owner review of the original identity evidence.
+Incomplete-evidence errors include fixed `phase` and `category` labels on stderr.
+`enumeration` identifies the primary-mailbox scan, `inspection` the exact-original
+lookup pass, `consistency` a disagreement between those observations, and
+`completion` the final cancellation check. Categories distinguish known typed
+cancellation/deadline, response limits, malformed responses, transport/read
+failures and selected HTTP response classes. Unknown causes remain
+`unknown-read-failure` or `unknown-api-response`; no raw cause text is printed.
+For example, `phase=consistency; category=metadata-changed` requires fresh
+observation and review, while `phase=inspection; category=throttled-http-429`
+reports a read that still failed after the existing bounded retries.
+
+HTTP categories describe responses, not mailbox ownership or sign-in state.
+In particular, `not-found-http-404` in a failed pass is not absence evidence or
+an executable disposition, and an authorization response does not identify the
+account or credential problem. These labels contain no message/account IDs,
+local numbers, provider codes/messages, URLs or exception text. They add no reads,
+retries or proof; every failed pass still has no proposal digest.
+
 A no-anchor result requires restoring access to an original immutable reference
 or obtaining a separately approved evidence policy. It does not direct you to
 prebinding full sync or automatic sign-in. Unknown ownership remains a stop.
