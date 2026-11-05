@@ -21,7 +21,7 @@ func TestLegacyReconciliationEvidence(t *testing.T) {
 				return (&serverBox{folders: map[string]string{id: "F-inbox"}, sender: "sender@example.org"}).wire(id)
 			}
 			var srv *httptest.Server
-			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv = httptest.NewServer(readOnlyBatchHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodGet {
 					t.Error("reconciliation attempted mutation")
 				}
@@ -121,7 +121,7 @@ func TestLegacyReconciliationEvidence(t *testing.T) {
 					w.WriteHeader(status)
 					write(map[string]any{"error": map[string]any{"code": code}})
 				}
-			}))
+			})))
 			defer srv.Close()
 			g := graph.New(func(context.Context) (string, error) { return "invented-token", nil })
 			g.Base = srv.URL
@@ -135,8 +135,8 @@ func TestLegacyReconciliationEvidence(t *testing.T) {
 				refs = append(refs, graphmail.LegacyReference{N: int64(i + 1), Ref: mailbox.MessageRef{AccountID: account.ID, MessageID: mailbox.MessageID(id), Locator: mailbox.Locator(id)}, InternetMessageID: "<" + id + "@example.org>", Sender: "sender@example.org", Collection: mailbox.CollectionRef{AccountID: account.ID, CollectionID: "F-inbox"}})
 			}
 			evidence, e := p.ReconcileLegacyReferences(context.Background(), refs)
-			if kind == "complete" {
-				if e != nil || len(evidence.States) != 1 || !evidence.Unavailable[2] || evidence.Pages != 2 {
+			if kind == "complete" || kind == "conflict" {
+				if e != nil || len(evidence.States) != 1 || !evidence.Unavailable[2] || evidence.Pages != map[bool]int{true: 1, false: 2}[kind == "conflict"] {
 					t.Fatalf("evidence: %+v %v", evidence, e)
 				}
 			} else if e == nil {

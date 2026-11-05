@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mrothroc/mailpipe/pkg/graphmail"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mrothroc/agentio"
 	"github.com/mrothroc/mailpipe/internal/mailpipe/cli"
@@ -19,7 +22,7 @@ import (
 	"github.com/mrothroc/mailpipe/pkg/store"
 )
 
-func TestReconciliationConflictIdentifiesOriginalAndObserved(t *testing.T) {
+func TestReconciliationInjectedLegacyDiagnosticIdentifiesOriginalAndObserved(t *testing.T) {
 	e := newEnv(t)
 	s, err := store.Open(e.db)
 	if err != nil {
@@ -38,13 +41,14 @@ func TestReconciliationConflictIdentifiesOriginalAndObserved(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.graph.server = map[string]serverMsg{"observed-id": {"inbox", "<shared@example.org>", "sender@example.org"}}
+	installInjectedLegacyDiagnostic(t, e, messages, "observed-id", "<shared@example.org>", "sender@example.org", "inbox")
 	code, out, stderr := e.run("account", "reconcile", "--json")
 	if code != agentio.ExitStale {
-		t.Fatalf("collision was not blocked: %d %s", code, stderr)
+		t.Fatalf("injected legacy error lost its blocked status: %d %s", code, stderr)
 	}
 	var row map[string]any
 	if err = json.Unmarshal([]byte(strings.TrimSpace(out)), &row); err != nil {
-		t.Fatalf("blocked conflict lacks structured original/observed references: %v; stdout=%q stderr=%q", err, out, stderr)
+		t.Fatalf("injected legacy diagnostic lacks original/observed references: %v; stdout=%q stderr=%q", err, out, stderr)
 	}
 	if row["n"] != float64(n) || row["original_id"] != "original-id" || row["observed_id"] != "observed-id" || row["status"] != "blocked" || row["enumeration_complete"] != false || row["original_inspection_complete"] != false {
 		t.Fatalf("misleading conflict evidence: %s", out)
@@ -125,7 +129,7 @@ func assertConflictPreservedHistory(t *testing.T, e *env, before []store.Message
 	}
 }
 
-func TestReconciliationConflictPrivateOverflowAndOriginalCoverage(t *testing.T) {
+func TestReconciliationInjectedLegacyDiagnosticPrivateOverflowAndOriginalCoverage(t *testing.T) {
 	for _, jsonMode := range []bool{false, true} {
 		t.Run(fmt.Sprint(jsonMode), func(t *testing.T) {
 			e := newEnv(t)
@@ -137,6 +141,7 @@ func TestReconciliationConflictPrivateOverflowAndOriginalCoverage(t *testing.T) 
 				t.Fatal(err)
 			}
 			e.graph.server = map[string]serverMsg{"observed-id": {"inbox", "<shared@example.org>", "sender@example.org"}}
+			installInjectedLegacyDiagnostic(t, e, before, "observed-id", "<shared@example.org>", "sender@example.org", "inbox")
 			args := []string{"account", "reconcile", "--limit", "1"}
 			if jsonMode {
 				args = append(args, "--json")
@@ -198,47 +203,56 @@ func TestReconciliationConflictPrivateOverflowAndOriginalCoverage(t *testing.T) 
 	}
 }
 
-func TestReconciliationConflictExecuteDoesNotUseOldProposal(t *testing.T) {
+func TestReconciliationCounterpartDoesNotChangeExactProposal(t *testing.T) {
 	e := newEnv(t)
 	seedConflictHistory(t, e, []string{"g1"}, "<g1@example.org>", "info@campaign.example.org")
 	before := seedConflictHistory(t, e, []string{"missing-original"}, "<shared@example.org>", "sender@example.org")
-	cfg, err := os.ReadFile(config.DefaultPath())
-	if err != nil {
-		t.Fatal(err)
-	}
 	code, out, stderr := e.run("account", "reconcile", "--json")
 	if code != 0 {
-		t.Fatalf("initial valid preview: %d %s", code, stderr)
+		t.Fatalf("initial preview: %d %s", code, stderr)
 	}
 	var summary map[string]any
-	if err = json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &summary); err != nil {
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &summary); err != nil {
 		t.Fatal(err)
 	}
 	e.graph.server["observed-id"] = serverMsg{"inbox", "<shared@example.org>", "sender@example.org"}
 	args := []string{"account", "reconcile", "--json", "--execute", "--confirm-account", summary["account"].(string), "--confirm-history", summary["source_digest"].(string), "--confirm-reconciliation", summary["reconciliation_digest"].(string)}
 	code, out, stderr = e.run(args...)
-	if code != agentio.ExitStale || len(conflictJSONRows(t, out)) != 1 || strings.Contains(stderr, "--confirm-") {
-		t.Fatalf("collision used old proposal: %d %s %s", code, out, stderr)
+	if code != 0 {
+		t.Fatalf("irrelevant counterpart blocked exact proposal: %d %s %s", code, out, stderr)
 	}
-	assertConflictPreservedHistory(t, e, before, cfg)
-	e.brokenStdout = true
-	code, out, stderr = e.run(args...)
-	if code != agentio.ExitStale || out != "" || !strings.Contains(stderr, "diagnostic output incomplete") {
-		t.Fatalf("execute output failure acquired authority: %d %s %s", code, out, stderr)
+	subject, err := e.auth.Subject(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	assertConflictPreservedHistory(t, e, before, cfg)
+	bound, err := store.OpenAccount(context.Background(), e.db, subject.Account())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bound.Close()
+	receipt, err := bound.LegacyReconciliationReceipt(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(receipt.Items) != len(before) || len(e.graph.moved) != 0 {
+		t.Fatal("counterpart published or server action attempted")
+	}
+	for _, row := range receipt.Items {
+		if row.OriginalID == "observed-id" {
+			t.Fatal("counterpart took original history")
+		}
+	}
 }
 
-func TestReconciliationConflictOmittedOriginalsAreNotHiddenByOverflow(t *testing.T) {
+func TestReconciliationInjectedLegacyDiagnosticPreservesSuppliedOmissionCounts(t *testing.T) {
 	e := newEnv(t)
 	outdir := filepath.Join(t.TempDir(), "out")
 	t.Setenv("MAILPIPE_OUT_DIR", outdir)
-	ids := make([]string, 35)
-	for i := range ids {
-		ids[i] = fmt.Sprintf("original-%d", i)
-	}
-	seedConflictHistory(t, e, ids, "<shared@example.org>", "sender@example.org")
+	ids := []string{"original-one", "original-two"}
+	before := seedConflictHistory(t, e, ids, "<shared@example.org>", "sender@example.org")
 	e.graph.server = map[string]serverMsg{"observed-id": {"inbox", "<shared@example.org>", "sender@example.org"}}
+	report := installInjectedLegacyDiagnostic(t, e, before, "observed-id", "<shared@example.org>", "sender@example.org", "inbox")
+	report.MatchingOriginals = 5 // supplied legacy payload: two retained, three omitted
 	code, out, stderr := e.run("account", "reconcile", "--json", "--limit", "1")
 	if code != agentio.ExitStale || len(conflictJSONRows(t, out)) != 1 {
 		t.Fatalf("bounded report failed: %d %s %s", code, out, stderr)
@@ -252,11 +266,11 @@ func TestReconciliationConflictOmittedOriginalsAreNotHiddenByOverflow(t *testing
 		t.Fatal(err)
 	}
 	rows := conflictJSONRows(t, string(raw))
-	if len(rows) != 32 {
-		t.Fatalf("retention cap not respected: %d rows", len(rows))
+	if len(rows) != 2 {
+		t.Fatalf("supplied retained rows lost: %d rows", len(rows))
 	}
 	for _, row := range rows {
-		if row["matching_originals"] != float64(35) || row["retained_originals"] != float64(32) || row["omitted_originals"] != float64(3) {
+		if row["matching_originals"] != float64(5) || row["retained_originals"] != float64(2) || row["omitted_originals"] != float64(3) {
 			t.Fatal("overflow hid omissions or claimed total mailbox coverage", row)
 		}
 	}
@@ -279,7 +293,7 @@ func (w *conflictOutputWriter) Write(p []byte) (int, error) {
 	return 0, errors.New("unregistered-writer-secret\x1b\n")
 }
 
-func TestReconciliationConflictOutputFailuresRemainBlocked(t *testing.T) {
+func TestReconciliationInjectedLegacyDiagnosticOutputFailuresRemainBlocked(t *testing.T) {
 	for _, kind := range []string{"write", "short", "partial", "overflow-file", "overflow-symlink", "overflow-unsafe"} {
 		t.Run(kind, func(t *testing.T) {
 			e := newEnv(t)
@@ -289,6 +303,7 @@ func TestReconciliationConflictOutputFailuresRemainBlocked(t *testing.T) {
 				t.Fatal(err)
 			}
 			e.graph.server = map[string]serverMsg{"observed-id": {"inbox", "<shared@example.org>", "sender@example.org"}}
+			installInjectedLegacyDiagnostic(t, e, before, "observed-id", "<shared@example.org>", "sender@example.org", "inbox")
 			var stderr bytes.Buffer
 			writer := &conflictOutputWriter{short: kind == "short"}
 			args := []string{"--db", e.db, "account", "reconcile", "--json"}
@@ -315,7 +330,7 @@ func TestReconciliationConflictOutputFailuresRemainBlocked(t *testing.T) {
 			if kind == "partial" {
 				writer.allowed = 1
 			}
-			root := cli.NewRootCommand(cli.Deps{Auth: func() (cli.Authenticator, error) { return e.auth, nil }, Store: store.Open, Graph: func(cli.Authenticator) cli.Graph { return e.graph }})
+			root := cli.NewRootCommand(cli.Deps{Auth: func() (cli.Authenticator, error) { return e.auth, nil }, Store: store.Open, Provider: func(context.Context) (mailbox.Provider, error) { return e.provider, nil }, Graph: func(cli.Authenticator) cli.Graph { return e.graph }})
 			root.SetOut(writer)
 			root.SetErr(&stderr)
 			root.SetArgs(args)
@@ -339,19 +354,19 @@ func TestReconciliationConflictOutputFailuresRemainBlocked(t *testing.T) {
 
 var _ io.Writer = (*conflictOutputWriter)(nil)
 
-func TestReconciliationConflictUntrustedMetadataAndSimultaneousOmissions(t *testing.T) {
+func TestReconciliationInjectedLegacyDiagnosticUntrustedMetadataAndSuppliedOmissions(t *testing.T) {
 	for _, jsonMode := range []bool{false, true} {
-		for _, oversized := range []bool{false, true} {
-			t.Run(fmt.Sprintf("json=%t/oversized=%t", jsonMode, oversized), func(t *testing.T) {
+		for _, fieldsOmitted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("json=%t/omitted=%t", jsonMode, fieldsOmitted), func(t *testing.T) {
 				e := newEnv(t)
 				outdir := filepath.Join(t.TempDir(), "out")
 				t.Setenv("MAILPIPE_OUT_DIR", outdir)
 				secret := "invented-conflict-secret"
 				agentio.RegisterSecret(secret)
 				metadata := "\x1b[31m\u009b\u202e\t\n'$(echo untrusted)' " + secret + " https://user:invented-password@host.example.org/path"
-				if oversized {
-					// The secret straddles the cap. Prefix truncation would expose a
-					// fragment before the shared redactor could recognize it.
+				if fieldsOmitted {
+					// Supply an omitted legacy field; the renderer must retain its
+					// byte count without reconstructing or displaying the value.
 					metadata = strings.Repeat("x", 1010) + secret
 				}
 				ids := []string{"original-one-" + metadata, "original-two-" + metadata}
@@ -363,6 +378,18 @@ func TestReconciliationConflictUntrustedMetadataAndSimultaneousOmissions(t *test
 					t.Fatal(err)
 				}
 				e.graph.server = map[string]serverMsg{observed: {folder, header, sender}}
+				report := installInjectedLegacyDiagnostic(t, e, before, observed, header, sender, folder)
+				if fieldsOmitted {
+					// Omission is fixture input, not a field-size or correlation policy.
+					fields := []*graphmail.ReconciliationDiagnosticField{&report.ObservedMessage.ID, &report.ObservedMessage.InternetMessageID, &report.ObservedMessage.Sender, &report.ObservedMessage.CollectionID}
+					for j := range report.Originals {
+						m := &report.Originals[j].Message
+						fields = append(fields, &m.ID, &m.InternetMessageID, &m.Sender)
+					}
+					for _, field := range fields {
+						*field = graphmail.ReconciliationDiagnosticField{OmittedBytes: len(field.Value)}
+					}
+				}
 				args := []string{"account", "reconcile", "--limit", "1"}
 				if jsonMode {
 					args = append(args, "--json")
@@ -380,8 +407,8 @@ func TestReconciliationConflictUntrustedMetadataAndSimultaneousOmissions(t *test
 					t.Fatal(err)
 				}
 				for _, text := range []string{out, stderr, string(raw)} {
-					if strings.Contains(text, secret) || strings.Contains(text, "invented-password") || oversized && strings.Contains(text, strings.Repeat("x", 50)) {
-						t.Fatal("diagnostics leaked a secret or oversized prefix")
+					if strings.Contains(text, secret) || strings.Contains(text, "invented-password") || fieldsOmitted && strings.Contains(text, strings.Repeat("x", 50)) {
+						t.Fatal("diagnostics leaked a secret or omitted prefix")
 					}
 				}
 				for _, control := range []string{"\x1b", "\u009b", "\u202e"} {
@@ -393,7 +420,7 @@ func TestReconciliationConflictUntrustedMetadataAndSimultaneousOmissions(t *test
 					rows := conflictJSONRows(t, string(raw))
 					for _, row := range rows {
 						omitted := row["fields_omitted_bytes"].(map[string]any)
-						if oversized {
+						if fieldsOmitted {
 							for name, original := range map[string]string{"original_header": header, "original_sender": sender, "observed_id": observed, "observed_header": header, "observed_sender": sender, "observed_collection": "F-" + folder} {
 								if row[name] != "" || omitted[name] != float64(len(original)) {
 									t.Fatalf("simultaneous omission not explicit for %s: %+v", name, row)
@@ -422,4 +449,39 @@ func TestReconciliationConflictUntrustedMetadataAndSimultaneousOmissions(t *test
 			})
 		}
 	}
+}
+
+// These tests inject legacy diagnostic payloads only to exercise rendering
+// compatibility. The real exact-ID collector does not produce these payloads.
+// This fixture applies no correlation selection, row cap or field-size policy.
+type injectedLegacyDiagnosticProvider struct {
+	*graphmail.Provider
+	report *graphmail.ReconciliationConflict
+}
+
+func (p injectedLegacyDiagnosticProvider) ReconcileLegacyReferences(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error) {
+	return graphmail.LegacyEvidence{}, &graphmail.ReconciliationError{Structural: true, Reason: "identity evidence requires review", Conflict: p.report}
+}
+func installInjectedLegacyDiagnostic(t *testing.T, e *env, originals []store.Message, observed, header, sender, folder string) *graphmail.ReconciliationConflict {
+	t.Helper()
+	subject, err := e.auth.Subject(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := graphmail.New(e.graph, subject.Account())
+	if err != nil {
+		t.Fatal(err)
+	}
+	field := func(v string) graphmail.ReconciliationDiagnosticField {
+		return graphmail.ReconciliationDiagnosticField{Value: v}
+	}
+	message := func(id, h, s, f string) graphmail.ReconciliationConflictMessage {
+		return graphmail.ReconciliationConflictMessage{ID: field(id), InternetMessageID: field(h), Sender: field(s), CollectionID: field(f)}
+	}
+	c := &graphmail.ReconciliationConflict{Account: field(string(subject.Account().ID)), ObservedMessage: message(observed, header, sender, "F-"+folder), MatchingOriginals: len(originals), Started: time.Now().UTC(), ObservedAt: time.Now().UTC(), Pages: 1, Observed: 1}
+	for _, m := range originals {
+		c.Originals = append(c.Originals, graphmail.ReconciliationConflictOriginal{N: m.N, Message: message(m.GraphID, m.InternetMessageID, m.Sender, "F-"+m.Folder)})
+	}
+	e.provider = injectedLegacyDiagnosticProvider{Provider: p, report: c}
+	return c
 }

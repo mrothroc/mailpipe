@@ -201,7 +201,7 @@ func TestReviewedReconciliationPreservesHistory(t *testing.T) {
 }
 
 func TestReconciliationTransactionFailuresRollBack(t *testing.T) {
-	for _, needle := range []string{"insert into store_binding", "update messages", "insert into legacy_reconciliations", "insert into legacy_reconciliation_items", "commit"} {
+	for _, needle := range []string{"insert into store_binding", "update messages", "insert into memberships", "insert into legacy_reconciliations", "insert into legacy_reconciliation_items", "commit"} {
 		t.Run(needle, func(t *testing.T) {
 			ctx := context.Background()
 			path := frozenLegacy(t)

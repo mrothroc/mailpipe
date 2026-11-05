@@ -14,13 +14,16 @@ import (
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 )
 
-type evidenceBenchmarkTransport struct{ n, calls, pages, inspections int }
+type evidenceBenchmarkTransport struct{ n, calls, pages, inspections, batches int }
 
 func (t *evidenceBenchmarkTransport) wire(i int) map[string]any {
 	id := fmt.Sprintf("invented-%d", i)
 	return map[string]any{"id": id, "parentFolderId": "F-inbox", "internetMessageId": fmt.Sprintf("<invented-%d@example.org>", i), "subject": "Invented history", "sender": map[string]any{"emailAddress": map[string]any{"address": "sender@example.org"}}, "toRecipients": []any{}, "ccRecipients": []any{}, "receivedDateTime": "2026-01-01T00:00:00Z", "hasAttachments": false, "isRead": false, "bodyPreview": "", "changeKey": "revision"}
 }
-func (t *evidenceBenchmarkTransport) Get(_ context.Context, path string, _ url.Values, out any) error {
+func (t *evidenceBenchmarkTransport) Get(ctx context.Context, path string, _ url.Values, out any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t.calls++
 	var result any
 	if strings.HasPrefix(path, "/me/messages/") {
@@ -60,8 +63,36 @@ func (t *evidenceBenchmarkTransport) Get(_ context.Context, path string, _ url.V
 func (*evidenceBenchmarkTransport) Do(context.Context, string, string, url.Values, string, any, any) error {
 	panic("unexpected mutation")
 }
-func (*evidenceBenchmarkTransport) Batch(context.Context, []graph.BatchRequest) ([]graph.BatchResponse, error) {
-	panic("unexpected batch")
+func (t *evidenceBenchmarkTransport) Batch(ctx context.Context, reqs []graph.BatchRequest) ([]graph.BatchResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	t.calls++
+	t.batches++
+	out := make([]graph.BatchResponse, len(reqs))
+	for i, r := range reqs {
+		if r.Method != "GET" || r.Body != nil || !strings.HasPrefix(r.URL, "/me/messages/") {
+			return nil, fmt.Errorf("unexpected mutation or inspection path")
+		}
+		u, err := url.Parse(r.URL)
+		if err != nil {
+			return nil, err
+		}
+		var body map[string]any
+		err = t.Get(ctx, u.Path, u.Query(), &body)
+		t.calls-- // the simulated subrequest is inside this one batch envelope
+		out[i] = graph.BatchResponse{ID: r.ID, Status: 200}
+		if err != nil {
+			api, ok := err.(*graph.APIError)
+			if !ok {
+				return nil, err
+			}
+			out[i].Status = api.Status
+			body = map[string]any{"error": map[string]any{"code": api.Code}}
+		}
+		out[i].Body, _ = json.Marshal(body)
+	}
+	return out, nil
 }
 func (*evidenceBenchmarkTransport) WriteRaw(context.Context, string, io.Writer, int64) error {
 	panic("unexpected body")
@@ -91,6 +122,7 @@ func BenchmarkGraphLegacyEvidence(b *testing.B) {
 			b.StopTimer()
 			b.ReportMetric(float64(transport.calls)/float64(b.N), "read-calls/op")
 			b.ReportMetric(float64(transport.pages)/float64(b.N), "pages/op")
+			b.ReportMetric(float64(transport.batches)/float64(b.N), "batches/op")
 			b.ReportMetric(float64(transport.inspections)/float64(b.N), "inspections/op")
 		})
 	}

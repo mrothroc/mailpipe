@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/url"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/mrothroc/mailpipe/pkg/graph"
@@ -57,7 +56,8 @@ type ReconciliationConflictOriginal struct {
 	Message ReconciliationConflictMessage
 }
 
-// ReconciliationConflict describes only the first conflicting observation.
+// ReconciliationConflict retains the legacy first-conflict diagnostic payload.
+// The exact-ID collector no longer emits this correlation-only diagnostic.
 // Enumeration and original inspection are incomplete, even without omissions.
 // MatchingOriginals counts matches for this observed record only, not a mailbox.
 type ReconciliationConflict struct {
@@ -67,45 +67,6 @@ type ReconciliationConflict struct {
 	MatchingOriginals   int
 	Started, ObservedAt time.Time
 	Pages, Observed     int
-}
-
-const reconciliationConflictOriginalLimit = 32
-const reconciliationDiagnosticFieldLimit = 1024
-
-func reconciliationDiagnosticField(value string) ReconciliationDiagnosticField {
-	if len(value) > reconciliationDiagnosticFieldLimit {
-		return ReconciliationDiagnosticField{OmittedBytes: len(value)}
-	}
-	return ReconciliationDiagnosticField{Value: strings.Clone(value)}
-}
-
-func reconciliationConflictMessage(id, header, sender, collection string) ReconciliationConflictMessage {
-	return ReconciliationConflictMessage{
-		ID: reconciliationDiagnosticField(id), InternetMessageID: reconciliationDiagnosticField(header),
-		Sender: reconciliationDiagnosticField(sender), CollectionID: reconciliationDiagnosticField(collection),
-	}
-}
-
-func (p *Provider) reconciliationConflict(refs []LegacyReference, state mailbox.State, out LegacyEvidence) *ReconciliationConflict {
-	c := &ReconciliationConflict{
-		Account: reconciliationDiagnosticField(string(p.account.ID)),
-		ObservedMessage: reconciliationConflictMessage(string(state.Ref.MessageID), state.Metadata.InternetMessageID,
-			state.Metadata.Sender.Address, string(state.Memberships[0].Collection.CollectionID)),
-		Started: out.Started, ObservedAt: time.Now().UTC(), Pages: out.Pages, Observed: out.Observed,
-	}
-	// refs is the existing exact-header bucket. Count all matching originals for
-	// this record, without retaining an unbounded list or making another read.
-	for _, r := range refs {
-		if r.Ref.MessageID == state.Ref.MessageID || !strings.EqualFold(strings.TrimSpace(r.Sender), strings.TrimSpace(state.Metadata.Sender.Address)) {
-			continue
-		}
-		c.MatchingOriginals++
-		if len(c.Originals) < reconciliationConflictOriginalLimit {
-			c.Originals = append(c.Originals, ReconciliationConflictOriginal{N: r.N,
-				Message: reconciliationConflictMessage(string(r.Ref.MessageID), r.InternetMessageID, r.Sender, string(r.Collection.CollectionID))})
-		}
-	}
-	return c
 }
 
 func (e *ReconciliationError) Error() string { return "Graph reconciliation: " + e.Reason }
@@ -135,7 +96,6 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 	}()
 	targets := map[string]LegacyReference{}
 	numbers := map[int64]bool{}
-	correlations := map[string][]LegacyReference{}
 	for _, r := range refs {
 		if r.N <= 0 || numbers[r.N] || r.Ref.Validate(p.account.ID) != nil || r.Ref.MessageID != mailbox.MessageID(r.Ref.Locator) || r.Collection.Validate(p.account.ID) != nil {
 			return out, reconciliationBlock("invalid original identity or account; preserve the mirror and request owner review")
@@ -146,9 +106,6 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		}
 		targets[id] = r
 		numbers[r.N] = true
-		if r.InternetMessageID != "" {
-			correlations[r.InternetMessageID] = append(correlations[r.InternetMessageID], r)
-		}
 	}
 	seen := map[string]bool{}
 	links := map[string]bool{}
@@ -212,13 +169,6 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 			}
 			seen[w.ID] = true
 			out.Observed++
-			for _, r := range correlations[state.Metadata.InternetMessageID] {
-				if string(r.Ref.MessageID) != w.ID && strings.EqualFold(strings.TrimSpace(r.Sender), strings.TrimSpace(state.Metadata.Sender.Address)) {
-					return out, &ReconciliationError{Structural: true,
-						Reason:   "different immutable identities share historical header evidence; preserve the mirror and request owner review",
-						Conflict: p.reconciliationConflict(correlations[state.Metadata.InternetMessageID], state, out)}
-				}
-			}
 			if _, ok := targets[w.ID]; ok {
 				listed[w.ID] = state
 			}
@@ -231,8 +181,22 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 			}
 		}
 	}
-	for _, r := range refs {
-		state, e := p.Inspect(ctx, r.Ref)
+	inspectRefs := make([]mailbox.MessageRef, len(refs))
+	for i, r := range refs {
+		inspectRefs[i] = r.Ref
+	}
+	states, failures, e := p.InspectBatch(ctx, inspectRefs)
+	if e != nil {
+		return out, incompleteEvidence(e)
+	}
+	if len(states) != len(refs) || len(failures) != len(refs) {
+		return out, incompleteEvidence(errors.New("incomplete original inspection"))
+	}
+	for i, r := range refs {
+		if e := ctx.Err(); e != nil {
+			return out, incompleteEvidence(e)
+		}
+		state, e := states[i], failures[i]
 		observed, found := listed[string(r.Ref.MessageID)]
 		if e != nil {
 			var api *graph.APIError
@@ -251,9 +215,9 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		if e = mailbox.CheckPrecondition(p.account.ID, observed, state); e != nil {
 			return out, incompleteEvidence(e)
 		}
-		expected := mailbox.State{Ref: r.Ref, Metadata: mailbox.Metadata{InternetMessageID: r.InternetMessageID, Sender: mailbox.Address{Address: r.Sender}}, Memberships: []mailbox.Membership{{Collection: r.Collection}}}
+		expected := mailbox.State{Ref: r.Ref, Metadata: mailbox.Metadata{InternetMessageID: r.InternetMessageID, Sender: mailbox.Address{Address: r.Sender}}, Memberships: state.Memberships}
 		if e = mailbox.CheckPrecondition(p.account.ID, expected, state); e != nil {
-			return out, reconciliationBlock("original identity, sender, header or collection conflicts with current evidence; preserve the mirror and request owner review")
+			return out, reconciliationBlock("original identity, sender or header conflicts with current evidence; preserve the mirror and request owner review")
 		}
 		out.States[r.N] = state
 	}

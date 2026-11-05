@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -159,5 +161,60 @@ func TestReconciliationVerifierCannotReuseSuccessfulReportAfterFailure(t *testin
 	proof, err := v.ReconcileLegacy(ctx, a, prep)
 	if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(proof, store.LegacyReconciliation{}) || !reflect.DeepEqual(v.report, store.LegacyReconciliationReceipt{}) {
 		t.Fatalf("old proposal escaped after failure: %+v %+v %v", proof, v.report, err)
+	}
+}
+
+func TestReconciliationMembershipOutputRedactsNestedPrimitives(t *testing.T) {
+	NewRootCommand(Deps{})
+	secret := "invented-nested-secret"
+	agentio.RegisterSecret(secret)
+	for _, jsonMode := range []bool{false, true} {
+		t.Run(fmt.Sprint(jsonMode), func(t *testing.T) {
+			var out, stderr bytes.Buffer
+			dir := t.TempDir()
+			agent := agentio.New("account reconcile", agentio.WithJSON(jsonMode), agentio.WithStdout(&out), agentio.WithStderr(&stderr), agentio.WithOverflowDir(dir), agentio.WithLimit(1))
+			account := mailbox.Account{ID: "invented-account", ProviderID: "graph"}
+			old := mailbox.Membership{Collection: mailbox.CollectionRef{AccountID: account.ID, CollectionID: mailbox.CollectionID("old-" + secret)}}
+			current := mailbox.Membership{Collection: mailbox.CollectionRef{AccountID: account.ID, CollectionID: mailbox.CollectionID("current-" + secret)}}
+			state := mailbox.State{Ref: mailbox.MessageRef{AccountID: account.ID, MessageID: mailbox.MessageID("id-" + secret), Locator: mailbox.Locator("id-" + secret)}, Memberships: []mailbox.Membership{current}, Revision: secret, Metadata: mailbox.Metadata{Subject: secret, Sender: mailbox.Address{Address: "sender@example.org\u202e"}}}
+			r := store.LegacyReconciliationReceipt{Version: 2, Account: account, Items: []store.LegacyReconciliationItem{{N: 9007199254740993, OriginalID: "id-" + secret, OriginalFolder: secret, OriginalMemberships: []mailbox.Membership{old}, MembershipChanged: true, Disposition: "verified", State: &state}}}
+			if err := reconciliationOutput(agent, "review", r); err != nil {
+				t.Fatal(err)
+			}
+			files, err := os.ReadDir(dir)
+			if err != nil || len(files) != 1 {
+				t.Fatalf("missing private overflow: %v %v", files, err)
+			}
+			path := filepath.Join(dir, files[0].Name())
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, value := range []string{out.String(), stderr.String(), string(raw)} {
+				if strings.Contains(value, secret) {
+					t.Fatal("nested typed state bypassed redaction")
+				}
+			}
+			if strings.Contains(out.String(), "\u202e") || strings.Contains(stderr.String(), "\u202e") {
+				t.Fatal("terminal control rendered")
+			}
+			if !strings.Contains(string(raw), "9007199254740993") {
+				t.Fatal("local number lost precision during primitive conversion")
+			}
+			info, err := os.Stat(path)
+			if err != nil || info.Mode().Perm() != 0600 {
+				t.Fatal("overflow is not private", err)
+			}
+			if jsonMode {
+				lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+				var row map[string]any
+				if err = json.Unmarshal([]byte(lines[1]), &row); err != nil {
+					t.Fatal(err)
+				}
+				if row["membership_changed"] != true || row["state"] == nil || row["original_memberships"] == nil {
+					t.Fatal("redaction omitted required review evidence")
+				}
+			}
+		})
 	}
 }

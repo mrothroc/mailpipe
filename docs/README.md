@@ -31,3 +31,4 @@ is described in the guides above; implementation contracts are in source and tes
 - [Yahoo setup and consent](adr/0006-yahoo-read-only-setup.md)
 - [Attachment extraction](adr/0008-attachment-extraction.md)
 - [Complete image filing](adr/0009-complete-image-filing.md)
+- [Exact-ID historical reconciliation](adr/0010-exact-id-reconciliation.md)

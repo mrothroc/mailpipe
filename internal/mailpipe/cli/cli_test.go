@@ -364,10 +364,14 @@ func (g *fakeGraph) Batch(_ context.Context, reqs []graph.BatchRequest) ([]graph
 		rest, _ := strings.CutPrefix(r.URL, "/me/messages/")
 		id, move := strings.CutSuffix(rest, "/move")
 		id, _, _ = strings.Cut(id, "?")
+		if (!move && (r.Method != http.MethodGet || r.Body != nil)) || (move && r.Method != http.MethodPost) {
+			return nil, errors.New("unexpected batch method or body")
+		}
 		m, ok := g.server[id]
 		switch {
 		case !ok:
 			out[i].Status = 404
+			out[i].Body = json.RawMessage(`{"error":{"code":"ErrorItemNotFound"}}`)
 		case !move && g.lookupFail != 0:
 			out[i].Status = g.lookupFail
 		case move && g.moveFail != 0:
