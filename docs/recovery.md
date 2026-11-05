@@ -64,8 +64,8 @@ A historical Graph mirror can require attribution before sync while strict
 `account bind` refuses a stored live reference that is now unavailable. Use
 `mailpipe account reconcile` in that same private context to preview complete
 read-only evidence and review every disposition and old-to-current membership
-change and accepted recipient casing pair. A casing exception is limited to
-corresponding recipient address strings on the same exact ID; display names,
+change and accepted address casing pair. A casing exception is limited to
+sender and corresponding recipient address strings on the same exact ID; display names,
 order and all other metadata stay strict. Both exact observations are retained
 and included in the reviewed proposal digest. Each original immutable ID is
 verified independently; matching headers

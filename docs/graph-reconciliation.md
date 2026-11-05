@@ -30,8 +30,8 @@ coverage and observation times, counts, and **every message disposition**:
   `original_memberships`, the current memberships in `state`, and
   `membership_changed`. A collection change is explicit old-to-current evidence,
   not an identity replacement; every change requires owner review. If
-  `recipient_casing_changed` is true, compare the exact `enumerated_state` with
-  inspection `state`. Only indexed recipient address casing may differ; names,
+  `sender_casing_changed` or `recipient_casing_changed` is true, compare the exact `enumerated_state` with
+  inspection `state`. Only sender and indexed recipient address casing may differ; names,
   order, duplicates and every other metadata field remain strict. Review the
   complete pair, including private overflow output.
 - `unavailable`: a completed enumeration did not observe this exact ID, and a
@@ -48,7 +48,7 @@ incomplete run produces no executable proposal digest.
 
 Only if the owner knows that **all** history belongs to the displayed account,
 including every unavailable row, and approves every displayed old-to-current
-membership change and recipient casing pair, obtain specific approval for local attribution:
+membership change and address casing pair, obtain specific approval for local attribution:
 
 ```text
 mailpipe account reconcile --execute --confirm-account <account> --confirm-history <history-digest> --confirm-reconciliation <reconciliation-digest>
@@ -131,7 +131,7 @@ and [immutable-ID guidance](https://learn.microsoft.com/en-us/graph/outlook-immu
 A found original must match its exact immutable reference, header and sender.
 A different collection is accepted only as explicit reviewed state in this
 reconciliation path. Enumeration and inspection must agree on current metadata,
-membership and any recorded revision, except the reviewed same-ID recipient
+membership and any recorded revision, except the reviewed same-ID sender and recipient
 address casing rule. It uses Unicode simple case folding (`strings.EqualFold`)
 without trimming, sorting, alias expansion or Unicode normalization. It does
 not establish RFC mailbox equivalence. Original spellings remain in both states;
@@ -139,13 +139,13 @@ no address is globally lowercased. Strict `account bind`, ordinary sync and acti
 preconditions retain their existing comparisons. An unavailable historical
 source-folder mapping remains blocked; no name or collection is guessed.
 
-New proposals and receipts use JSON version 3 and a separate digest domain.
+New proposals and receipts use JSON version 4 and a separate digest domain.
 The proposal covers original and current membership evidence for every live
 original, plus both exact observations for accepted casing differences, alongside
 the account, complete source digest, folder mappings and all dispositions.
 Changing either spelling changes the proposal digest even when folding still
-matches. A version-1 or version-2 pending proposal cannot execute a new binding;
-obtain a fresh preview. Committed version-1 and version-2 receipts remain readable offline and
+matches. A version-1, version-2 or version-3 pending proposal cannot execute a new binding;
+obtain a fresh preview. Committed version-1, version-2 and version-3 receipts remain readable offline and
 retain their exact-confirmation routing-repair behavior. They are not rewritten,
 reinterpreted as new evidence or replayed through binding. See the
 [exact-ID reconciliation decision](adr/0010-exact-id-reconciliation.md).
@@ -158,8 +158,16 @@ such a report. Generate a fresh complete preview with the current binary.
 
 Output limits affect display, never evidence completeness. Nested report fields
 use the shared recursive secret redactor; terminal controls are escaped for
-display. Overflow files remain private, untrusted metadata. Generic errors do
-not echo message identifiers, subjects, bodies or raw provider responses.
+display. Overflow files remain private, untrusted metadata. Metadata failures report fixed field labels and positional address/name
+relationships, without values. Address labels are `exact`, `case-only`,
+`trim-only`, `trim-and-case`, `different` or `invalid-utf8`; recipient shape
+mismatches use `representation-different` or `cardinality-different`. Encoding
+is checked first for scalar addresses; recipient shape precedes encoding.
+Otherwise exact, untrimmed case, trim-only and combined comparisons take
+precedence in that order. Names use exact equality only. `different` can mean
+order or content differences, not semantic mailbox identity. Trim labels explain
+a rejection and never permit trimming. Errors do not echo message identifiers,
+subjects, bodies or raw provider responses.
 
 The collector's [paging and evidence limits](../pkg/graphmail/reconciliation.go)
 and the Graph client's [response bounds and retries](../pkg/graph/graph.go) are

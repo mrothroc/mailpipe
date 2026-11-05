@@ -26,7 +26,12 @@ func casingRecipients(values []mailbox.Address) []any {
 // collector. The two reads intentionally retain different address spellings.
 func collectCasing(t *testing.T, before, after []mailbox.Address, change func(map[string]any)) (graphmail.LegacyEvidence, error) {
 	t.Helper()
-	box := &serverBox{folders: map[string]string{"one": "inbox"}, sender: "sender@example.org"}
+	return collectSenderCasing(t, "sender@example.org", before, after, change)
+}
+
+func collectSenderCasing(t *testing.T, sender string, before, after []mailbox.Address, change func(map[string]any)) (graphmail.LegacyEvidence, error) {
+	t.Helper()
+	box := &serverBox{folders: map[string]string{"one": "inbox"}, sender: sender}
 	pages, inspections := 0, 0
 	srv := httptest.NewServer(readOnlyBatchHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.Header.Get("Prefer"), `IdType="ImmutableId"`) {
@@ -57,7 +62,7 @@ func collectCasing(t *testing.T, before, after []mailbox.Address, change func(ma
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := p.ReconcileLegacyReferences(context.Background(), []graphmail.LegacyReference{{N: 1, Ref: mailbox.MessageRef{AccountID: account.ID, MessageID: "one", Locator: "one"}, InternetMessageID: "<one@example.org>", Sender: "sender@example.org", Collection: mailbox.CollectionRef{AccountID: account.ID, CollectionID: "inbox"}}})
+	proof, err := p.ReconcileLegacyReferences(context.Background(), []graphmail.LegacyReference{{N: 1, Ref: mailbox.MessageRef{AccountID: account.ID, MessageID: "one", Locator: "one"}, InternetMessageID: "<one@example.org>", Sender: sender, Collection: mailbox.CollectionRef{AccountID: account.ID, CollectionID: "inbox"}}})
 	if pages != 1 || inspections != 1 {
 		t.Fatalf("changed read count: pages=%d inspections=%d", pages, inspections)
 	}
@@ -80,7 +85,7 @@ func TestReconciliationRecipientCasing(t *testing.T) {
 
 func TestReconciliationCasingDoesNotMaskOtherChanges(t *testing.T) {
 	base := []mailbox.Address{{Address: "First@Example.org", Name: "First"}, {Address: "second@example.org", Name: "Second"}}
-	for _, kind := range []string{"name", "order", "cardinality", "multiplicity", "trim", "plus", "dot", "different", "full-fold", "normalization", "subject", "preview", "received", "sender-name", "sender-address", "header", "read", "attachments", "membership", "revision", "id"} {
+	for _, kind := range []string{"name", "order", "cardinality", "multiplicity", "trim", "plus", "dot", "different", "full-fold", "normalization", "subject", "preview", "received", "sender-name", "sender-content", "header", "read", "attachments", "membership", "revision", "id"} {
 		t.Run(kind, func(t *testing.T) {
 			after := append([]mailbox.Address(nil), base...)
 			after[0].Address = "first@example.org"
@@ -123,9 +128,9 @@ func TestReconciliationCasingDoesNotMaskOtherChanges(t *testing.T) {
 				change = func(m map[string]any) {
 					m["sender"] = map[string]any{"emailAddress": map[string]string{"address": "sender@example.org", "name": "Changed"}}
 				}
-			case "sender-address":
+			case "sender-content":
 				change = func(m map[string]any) {
-					m["sender"] = map[string]any{"emailAddress": map[string]string{"address": "SENDER@example.org"}}
+					m["sender"] = map[string]any{"emailAddress": map[string]string{"address": "other@example.org"}}
 				}
 			case "header":
 				change = func(m map[string]any) { m["internetMessageId"] = "<changed@example.org>" }
