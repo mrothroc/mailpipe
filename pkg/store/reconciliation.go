@@ -39,6 +39,7 @@ type LegacyReconciliationVerifier interface {
 }
 
 type LegacyReconciliationItem struct {
+	SenderCasingChanged    bool                 `json:"sender_casing_changed"`
 	RecipientCasingChanged bool                 `json:"recipient_casing_changed"`
 	EnumeratedState        *mailbox.State       `json:"enumerated_state,omitempty"`
 	OriginalFolder         string               `json:"original_folder,omitempty"`
@@ -94,7 +95,7 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 	if len(v.Unavailable) > 0 && len(v.Verification.States) == 0 {
 		return r, stale("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference or ask the owner for an approved evidence policy")
 	}
-	r = LegacyReconciliationReceipt{Version: 3, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
+	r = LegacyReconciliationReceipt{Version: 4, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
 	acceptedCasing := make(map[int64]bool, len(v.EnumeratedStates))
 	for _, m := range p.Live {
 		if m.GraphID == "" {
@@ -130,7 +131,8 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 				}
 				enumerated = reconciliationSnapshot(enumerated)
 				item.EnumeratedState = &enumerated
-				item.RecipientCasingChanged = true
+				item.SenderCasingChanged = enumerated.Metadata.Sender.Address != state.Metadata.Sender.Address
+				item.RecipientCasingChanged = !reflect.DeepEqual(enumerated.Metadata.Recipients, state.Metadata.Recipients)
 				acceptedCasing[m.N] = true
 			}
 		}
@@ -152,7 +154,7 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 		Source, Coverage string
 		Folders          map[string]mailbox.CollectionRef
 		Items            []LegacyReconciliationItem
-	}{"mailpipe-legacy-reconciliation-v3", a, p.digest, v.Coverage, r.Folders, r.Items})
+	}{"mailpipe-legacy-reconciliation-v4", a, p.digest, v.Coverage, r.Folders, r.Items})
 	if e != nil {
 		return LegacyReconciliationReceipt{}, e
 	}
@@ -164,7 +166,7 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 // Independently validate the adapter's exception at the persistence boundary.
 // Names and order remain exact; this is not a global address comparator.
 func reconciliationCasingPair(account mailbox.AccountID, enumerated, inspected mailbox.State) error {
-	invalid := func() error { return stale("recipient casing observations disagree") }
+	invalid := func() error { return stale("address casing observations disagree") }
 	if enumerated.Validate(account) != nil || inspected.Validate(account) != nil || len(enumerated.Memberships) != 1 || len(inspected.Memberships) != 1 {
 		return invalid()
 	}
@@ -172,15 +174,23 @@ func reconciliationCasingPair(account mailbox.AccountID, enumerated, inspected m
 		return err
 	}
 	a, b := enumerated.Metadata, inspected.Metadata
+	if !utf8.ValidString(a.Sender.Address) || !utf8.ValidString(b.Sender.Address) || !strings.EqualFold(a.Sender.Address, b.Sender.Address) {
+		return invalid()
+	}
 	if reflect.DeepEqual(a, b) || (a.Recipients == nil) != (b.Recipients == nil) || len(a.Recipients) != len(b.Recipients) {
 		return invalid()
 	}
 	for i, left := range a.Recipients {
 		right := b.Recipients[i]
-		if left.Name != right.Name || !utf8.ValidString(left.Address) || !utf8.ValidString(right.Address) || !strings.EqualFold(left.Address, right.Address) {
+		if !utf8.ValidString(left.Address) || !utf8.ValidString(right.Address) || !strings.EqualFold(left.Address, right.Address) {
+			return invalid()
+		}
+		left.Address, right.Address = "", ""
+		if !reflect.DeepEqual(left, right) {
 			return invalid()
 		}
 	}
+	a.Sender.Address, b.Sender.Address = "", ""
 	a.Recipients, b.Recipients = nil, nil
 	if !reflect.DeepEqual(a, b) {
 		return invalid()

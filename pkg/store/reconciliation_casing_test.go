@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,8 +65,8 @@ func TestReconciliationCasingReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Version != 3 {
-		t.Fatalf("new casing review needs v3, got %d", r.Version)
+	if r.Version != 4 {
+		t.Fatalf("new casing review needs v4, got %d", r.Version)
 	}
 	raw, _ := json.Marshal(r.Items[0])
 	var item struct {
@@ -211,7 +212,7 @@ func TestReconciliationCasingValidationAndDigest(t *testing.T) {
 }
 
 // Frozen v2 item JSON order and domain: pending v2 confirmations must never
-// inherit v3 authority, including when no casing pair is present.
+// inherit current authority, including when no casing pair is present.
 type reconciliationV2Item struct {
 	OriginalFolder      string               `json:"original_folder,omitempty"`
 	OriginalMemberships []mailbox.Membership `json:"original_memberships,omitempty"`
@@ -248,11 +249,15 @@ func reconciliationV2Digest(t *testing.T, r LegacyReconciliationReceipt) string 
 }
 
 func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
-	for _, kind := range []string{"valid", "changed-pair", "missing-pair", "v1", "v2"} {
+	for _, kind := range []string{"valid", "changed-pair", "changed-sender", "missing-pair", "v1", "v2", "v3"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			path, a, p, v := casingPreparation(t)
-			if kind == "v1" || kind == "v2" {
+			n := p.Live[0].N
+			enumerated := v.EnumeratedStates[n]
+			enumerated.Metadata.Sender.Address = "SENDER@Example.org"
+			v.EnumeratedStates[n] = enumerated
+			if kind == "v1" || kind == "v2" || kind == "v3" {
 				v.EnumeratedStates = nil
 			}
 			r, err := ReviewLegacyReconciliation(a, p, v)
@@ -266,11 +271,19 @@ func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
 			if kind == "v2" {
 				confirmation = reconciliationV2Digest(t, r)
 			}
+			if kind == "v3" {
+				confirmation = reconciliationV3Digest(t, r)
+			}
 			owned := ownReconciliation(v)
 			if kind == "changed-pair" {
 				n := p.Live[0].N
 				s := owned.EnumeratedStates[n]
 				s.Metadata.Recipients[0].Address = "READER@EXAMPLE.ORG"
+				owned.EnumeratedStates[n] = s
+			}
+			if kind == "changed-sender" {
+				s := owned.EnumeratedStates[n]
+				s.Metadata.Sender.Address = "Sender@EXAMPLE.ORG"
 				owned.EnumeratedStates[n] = s
 			}
 			if kind == "missing-pair" {
@@ -312,7 +325,7 @@ func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
 				t.Fatal(err)
 			}
 			var item LegacyReconciliationItem
-			if err = json.Unmarshal([]byte(raw), &item); err != nil || !item.RecipientCasingChanged || item.EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" {
+			if err = json.Unmarshal([]byte(raw), &item); err != nil || !item.SenderCasingChanged || item.EnumeratedState.Metadata.Sender.Address != "SENDER@Example.org" || !item.RecipientCasingChanged || item.EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" {
 				t.Fatal("committed pair changed", err)
 			}
 		})
@@ -334,6 +347,9 @@ func TestReconciliationCasingBindingPreservesHistoryAndAuthoritativeInventory(t 
 		t.Fatal(err)
 	}
 	db.Close()
+	enumerated := v.EnumeratedStates[p.Live[0].N]
+	enumerated.Metadata.Sender.Address = strings.ToUpper(enumerated.Metadata.Sender.Address)
+	v.EnumeratedStates[p.Live[0].N] = enumerated
 	r, err := ReviewLegacyReconciliation(a, p, v)
 	if err != nil {
 		t.Fatal(err)
@@ -359,7 +375,7 @@ func TestReconciliationCasingBindingPreservesHistoryAndAuthoritativeInventory(t 
 		t.Fatal(err)
 	}
 	read, found, err := ReadLegacyReconciliationReceipt(ctx, path, a)
-	if err != nil || !found || read.Version != 3 || read.Digest != r.Digest || read.Items[0].EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" {
+	if err != nil || !found || read.Version != 4 || !read.Items[0].SenderCasingChanged || read.Items[0].EnumeratedState.Metadata.Sender.Address != enumerated.Metadata.Sender.Address || read.Digest != r.Digest || read.Items[0].EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" {
 		t.Fatal("receipt pair not retained offline", err)
 	}
 }

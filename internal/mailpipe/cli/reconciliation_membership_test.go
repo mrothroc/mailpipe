@@ -42,7 +42,7 @@ func TestReconciliationReviewsDistinctIDsAndMembershipChanges(t *testing.T) {
 	}
 	summary := rows[0]
 	for _, row := range rows[1:] {
-		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(3) {
+		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(4) {
 			t.Fatal("incomplete original evidence", row)
 		}
 		old := row["original_memberships"].([]any)[0].(map[string]any)["Collection"].(map[string]any)["CollectionID"]
@@ -82,7 +82,7 @@ func TestReconciliationReviewsDistinctIDsAndMembershipChanges(t *testing.T) {
 }
 
 func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
-	for _, version := range []int{1, 2} {
+	for _, version := range []int{1, 2, 3} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			e := newEnv(t)
 			seedConflictHistory(t, e, []string{"g1"}, "<g1@example.org>", "info@campaign.example.org")
@@ -125,7 +125,10 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if err = json.Unmarshal([]byte(item), &oldItem); err != nil {
 				t.Fatal(err)
 			}
-			keys := []string{"recipient_casing_changed", "enumerated_state"}
+			keys := []string{"sender_casing_changed"}
+			if version < 3 {
+				keys = append(keys, "recipient_casing_changed", "enumerated_state")
+			}
 			if version == 1 {
 				keys = append(keys, "original_folder", "original_memberships", "membership_changed")
 			}

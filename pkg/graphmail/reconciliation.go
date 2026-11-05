@@ -9,9 +9,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/mrothroc/mailpipe/pkg/graph"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
@@ -28,7 +26,7 @@ type LegacyReference struct {
 type LegacyEvidence struct {
 	States map[int64]mailbox.State
 	// EnumeratedStates retains the exact first observation only for accepted
-	// recipient casing differences. States retains the exact inspection result.
+	// address casing differences. States retains the exact inspection result.
 	EnumeratedStates  map[int64]mailbox.State
 	Unavailable       map[int64]bool
 	Started, Finished time.Time
@@ -275,8 +273,8 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 			return out, incompleteEvidence("consistency", "reference-appeared", errors.New("reference appeared after enumeration"))
 		}
 		casingChanged := !reflect.DeepEqual(observed.Metadata, state.Metadata)
-		if casingChanged && !reconciliationRecipientCasing(observed.Metadata, state.Metadata) {
-			return out, incompleteEvidence("consistency", "metadata-changed", errors.New("metadata changed after enumeration"))
+		if casingChanged && !reconciliationAddressCasing(observed.Metadata, state.Metadata) {
+			return out, incompleteEvidence("consistency", "metadata-changed"+metadataDifference(observed.Metadata, state.Metadata), errors.New("metadata changed after enumeration"))
 		}
 		if e = mailbox.CheckPrecondition(p.account.ID, observed, state); e != nil {
 			return out, incompleteEvidence("consistency", "precondition-changed", e)
@@ -298,23 +296,6 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 	}
 	out.Finished = time.Now().UTC()
 	return out, nil
-}
-
-// This recovery-only comparison is positional and preserves duplicate entries.
-// EqualFold is a string relationship, not RFC mailbox equivalence. The normal
-// provider/action comparator and all input strings remain unchanged.
-func reconciliationRecipientCasing(a, b mailbox.Metadata) bool {
-	if (a.Recipients == nil) != (b.Recipients == nil) || len(a.Recipients) != len(b.Recipients) {
-		return false
-	}
-	for i, left := range a.Recipients {
-		right := b.Recipients[i]
-		if left.Name != right.Name || !utf8.ValidString(left.Address) || !utf8.ValidString(right.Address) || !strings.EqualFold(left.Address, right.Address) {
-			return false
-		}
-	}
-	a.Recipients, b.Recipients = nil, nil // value copies only; never slice mutation
-	return reflect.DeepEqual(a, b)
 }
 
 func reconciliationObservation(s mailbox.State) mailbox.State {

@@ -25,12 +25,12 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 			var out, stderr bytes.Buffer
 			dir := t.TempDir()
 			agent := agentio.New("account reconcile", agentio.WithJSON(jsonMode), agentio.WithStdout(&out), agentio.WithStderr(&stderr), agentio.WithOverflowDir(dir), agentio.WithLimit(1))
-			current, enumerated := mailbox.State{}, mailbox.State{}
+			current, enumerated := mailbox.State{Metadata: mailbox.Metadata{Sender: mailbox.Address{Address: "SENDER@Example.org"}}}, mailbox.State{Metadata: mailbox.Metadata{Sender: mailbox.Address{Address: "sender@example.org"}}}
 			for i := 0; i < 256; i++ {
 				current.Metadata.Recipients = append(current.Metadata.Recipients, mailbox.Address{Address: fmt.Sprintf("reader%d@example.org", i), Name: secret + "\x1b\u202e"})
 				enumerated.Metadata.Recipients = append(enumerated.Metadata.Recipients, mailbox.Address{Address: fmt.Sprintf("Reader%d@Example.org", i), Name: secret + "\x1b\u202e"})
 			}
-			r := store.LegacyReconciliationReceipt{Version: 3, Items: []store.LegacyReconciliationItem{{N: 9007199254740993, Disposition: "verified", State: &current, EnumeratedState: &enumerated, RecipientCasingChanged: true}}}
+			r := store.LegacyReconciliationReceipt{Version: 4, Items: []store.LegacyReconciliationItem{{N: 9007199254740993, Disposition: "verified", State: &current, EnumeratedState: &enumerated, RecipientCasingChanged: true, SenderCasingChanged: true}}}
 			if err := reconciliationOutput(agent, "review", r); err != nil {
 				t.Fatal(err)
 			}
@@ -62,7 +62,7 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 				if err = json.Unmarshal([]byte(lines[len(lines)-1]), &row); err != nil {
 					t.Fatal(err)
 				}
-				if row["recipient_casing_changed"] != true {
+				if row["recipient_casing_changed"] != true || row["sender_casing_changed"] != true {
 					t.Fatal("missing review flag")
 				}
 				left = row["enumerated_state"].(map[string]any)
@@ -89,7 +89,7 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 					t.Fatal("recipient pair truncated")
 				}
 			}
-			for _, want := range []string{"Reader0@Example.org", "Reader255@Example.org", "reader0@example.org", "reader255@example.org", "9007199254740993"} {
+			for _, want := range []string{"Reader0@Example.org", "Reader255@Example.org", "reader0@example.org", "reader255@example.org", "9007199254740993", "SENDER@Example.org", "sender@example.org"} {
 				if !strings.Contains(string(raw), want) {
 					t.Fatal("raw reviewed pair or integer lost")
 				}
