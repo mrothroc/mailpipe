@@ -6,8 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 )
@@ -22,7 +25,9 @@ const (
 // LegacyReconciliation is supplied by a trusted read-only adapter. Unavailable
 // references have no invented remote State; the owner attributes their history.
 type LegacyReconciliation struct {
-	Verification      LegacyVerification
+	Verification LegacyVerification
+	// Only verified originals with a casing exception have a first observation.
+	EnumeratedStates  map[int64]mailbox.State
 	Unavailable       map[int64]string
 	Coverage          string
 	Started, Finished time.Time
@@ -34,15 +39,17 @@ type LegacyReconciliationVerifier interface {
 }
 
 type LegacyReconciliationItem struct {
-	OriginalFolder      string               `json:"original_folder,omitempty"`
-	OriginalMemberships []mailbox.Membership `json:"original_memberships,omitempty"`
-	MembershipChanged   bool                 `json:"membership_changed"`
-	N                   int64                `json:"n"`
-	OriginalID          string               `json:"original_id"`
-	Removed             bool                 `json:"original_removed"`
-	Disposition         string               `json:"disposition"`
-	Reason              string               `json:"reason,omitempty"`
-	State               *mailbox.State       `json:"state,omitempty"`
+	RecipientCasingChanged bool                 `json:"recipient_casing_changed"`
+	EnumeratedState        *mailbox.State       `json:"enumerated_state,omitempty"`
+	OriginalFolder         string               `json:"original_folder,omitempty"`
+	OriginalMemberships    []mailbox.Membership `json:"original_memberships,omitempty"`
+	MembershipChanged      bool                 `json:"membership_changed"`
+	N                      int64                `json:"n"`
+	OriginalID             string               `json:"original_id"`
+	Removed                bool                 `json:"original_removed"`
+	Disposition            string               `json:"disposition"`
+	Reason                 string               `json:"reason,omitempty"`
+	State                  *mailbox.State       `json:"state,omitempty"`
 }
 
 // LegacyReconciliationReceipt records local attribution authority and scoped
@@ -67,6 +74,7 @@ type LegacyReconciliationReceipt struct {
 // ReviewLegacyReconciliation validates complete, disjoint coverage and derives a
 // deterministic proposal digest. Preview does not require owner confirmation.
 func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v LegacyReconciliation) (LegacyReconciliationReceipt, error) {
+	v = ownReconciliation(v)
 	r := LegacyReconciliationReceipt{}
 	if e := a.Validate(); e != nil {
 		return r, e
@@ -86,7 +94,8 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 	if len(v.Unavailable) > 0 && len(v.Verification.States) == 0 {
 		return r, stale("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference or ask the owner for an approved evidence policy")
 	}
-	r = LegacyReconciliationReceipt{Version: 2, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
+	r = LegacyReconciliationReceipt{Version: 3, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
+	acceptedCasing := make(map[int64]bool, len(v.EnumeratedStates))
 	for _, m := range p.Live {
 		if m.GraphID == "" {
 			return LegacyReconciliationReceipt{}, stale("historical immutable identity is missing")
@@ -115,8 +124,22 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 			}
 			item.Disposition = "verified"
 			item.State = &state
+			if enumerated, ok := v.EnumeratedStates[m.N]; ok {
+				if e = reconciliationCasingPair(a.ID, enumerated, state); e != nil {
+					return LegacyReconciliationReceipt{}, e
+				}
+				enumerated = reconciliationSnapshot(enumerated)
+				item.EnumeratedState = &enumerated
+				item.RecipientCasingChanged = true
+				acceptedCasing[m.N] = true
+			}
 		}
 		r.Items = append(r.Items, item)
+	}
+	for n := range v.EnumeratedStates {
+		if !acceptedCasing[n] {
+			return LegacyReconciliationReceipt{}, errors.New("store: casing observation requires a verified original")
+		}
 	}
 	for _, m := range p.Removed {
 		r.Items = append(r.Items, LegacyReconciliationItem{N: m.N, OriginalID: m.GraphID, Removed: true, Disposition: "historical"})
@@ -129,13 +152,73 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 		Source, Coverage string
 		Folders          map[string]mailbox.CollectionRef
 		Items            []LegacyReconciliationItem
-	}{"mailpipe-legacy-reconciliation-v2", a, p.digest, v.Coverage, r.Folders, r.Items})
+	}{"mailpipe-legacy-reconciliation-v3", a, p.digest, v.Coverage, r.Folders, r.Items})
 	if e != nil {
 		return LegacyReconciliationReceipt{}, e
 	}
 	h := sha256.Sum256(raw)
 	r.Digest = hex.EncodeToString(h[:])
 	return r, nil
+}
+
+// Independently validate the adapter's exception at the persistence boundary.
+// Names and order remain exact; this is not a global address comparator.
+func reconciliationCasingPair(account mailbox.AccountID, enumerated, inspected mailbox.State) error {
+	invalid := func() error { return stale("recipient casing observations disagree") }
+	if enumerated.Validate(account) != nil || inspected.Validate(account) != nil || len(enumerated.Memberships) != 1 || len(inspected.Memberships) != 1 {
+		return invalid()
+	}
+	if err := mailbox.CheckPrecondition(account, enumerated, inspected); err != nil {
+		return err
+	}
+	a, b := enumerated.Metadata, inspected.Metadata
+	if reflect.DeepEqual(a, b) || (a.Recipients == nil) != (b.Recipients == nil) || len(a.Recipients) != len(b.Recipients) {
+		return invalid()
+	}
+	for i, left := range a.Recipients {
+		right := b.Recipients[i]
+		if left.Name != right.Name || !utf8.ValidString(left.Address) || !utf8.ValidString(right.Address) || !strings.EqualFold(left.Address, right.Address) {
+			return invalid()
+		}
+	}
+	a.Recipients, b.Recipients = nil, nil
+	if !reflect.DeepEqual(a, b) {
+		return invalid()
+	}
+	return nil
+}
+
+func reconciliationSnapshot(s mailbox.State) mailbox.State {
+	if s.Metadata.Recipients != nil {
+		s.Metadata.Recipients = append([]mailbox.Address{}, s.Metadata.Recipients...)
+	}
+	if s.Memberships != nil {
+		s.Memberships = append([]mailbox.Membership{}, s.Memberships...)
+	}
+	return s
+}
+
+func ownReconciliation(v LegacyReconciliation) LegacyReconciliation {
+	states := func(in map[int64]mailbox.State) map[int64]mailbox.State {
+		out := make(map[int64]mailbox.State, len(in))
+		for n, s := range in {
+			out[n] = reconciliationSnapshot(s)
+		}
+		return out
+	}
+	v.Verification.States = states(v.Verification.States)
+	v.EnumeratedStates = states(v.EnumeratedStates)
+	folders := make(map[string]mailbox.CollectionRef, len(v.Verification.Folders))
+	for name, ref := range v.Verification.Folders {
+		folders[name] = ref
+	}
+	v.Verification.Folders = folders
+	unavailable := make(map[int64]string, len(v.Unavailable))
+	for n, reason := range v.Unavailable {
+		unavailable[n] = reason
+	}
+	v.Unavailable = unavailable
+	return v
 }
 
 // reconciliationState separates the historical collection from independently
@@ -155,13 +238,14 @@ func reconciliationState(account mailbox.AccountID, original Message, old mailbo
 	if err := mailbox.CheckPrecondition(account, expected, current); err != nil {
 		return mailbox.State{}, false, err
 	}
-	return canonicalState(current), current.Memberships[0].Collection != old, nil
+	return canonicalState(reconciliationSnapshot(current)), current.Memberships[0].Collection != old, nil
 }
 
 type legacyReconciliationRequest struct {
 	verifier     LegacyReconciliationVerifier
 	confirmation string
 	receipt      LegacyReconciliationReceipt
+	evidence     LegacyReconciliation
 }
 
 // ReconcileLegacy binds only a freshly regenerated, exactly reviewed proposal.

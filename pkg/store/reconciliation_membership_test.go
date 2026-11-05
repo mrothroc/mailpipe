@@ -44,7 +44,7 @@ func TestReconciliationReviewsMovedMembership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reviewable exact-ID collection change blocked: %v", err)
 	}
-	if r.Version != 2 {
+	if r.Version != 3 {
 		t.Fatalf("membership proposal has version %d", r.Version)
 	}
 	raw, _ := json.Marshal(r.Items[0])

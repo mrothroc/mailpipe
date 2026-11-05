@@ -3,6 +3,7 @@ package cli_test
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestReconciliationReviewsDistinctIDsAndMembershipChanges(t *testing.T) {
 	}
 	summary := rows[0]
 	for _, row := range rows[1:] {
-		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(2) {
+		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(3) {
 			t.Fatal("incomplete original evidence", row)
 		}
 		old := row["original_memberships"].([]any)[0].(map[string]any)["Collection"].(map[string]any)["CollectionID"]
@@ -80,87 +81,95 @@ func TestReconciliationReviewsDistinctIDsAndMembershipChanges(t *testing.T) {
 	}
 }
 
-func TestReconciliationV1ReceiptOfflineAndRoutingRepair(t *testing.T) {
-	e := newEnv(t)
-	seedConflictHistory(t, e, []string{"g1"}, "<g1@example.org>", "info@campaign.example.org")
-	code, out, stderr := e.run("account", "reconcile", "--json")
-	if code != 0 {
-		t.Fatal(stderr)
-	}
-	summary := reconciliationRows(t, out)[0]
-	args := []string{"account", "reconcile", "--execute", "--confirm-account", summary["account"].(string), "--confirm-history", summary["source_digest"].(string), "--confirm-reconciliation", summary["reconciliation_digest"].(string)}
-	if code, _, stderr = e.run(args...); code != 0 {
-		t.Fatal(stderr)
-	}
-	// Construct an old stored receipt only in this isolated synthetic fixture.
-	// The product has no receipt import or rewrite path.
-	db, err := sql.Open("sqlite", "file:"+e.db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var raw string
-	if err = db.QueryRow("select receipt from legacy_reconciliations").Scan(&raw); err != nil {
-		t.Fatal(err)
-	}
-	var receipt map[string]any
-	if err = json.Unmarshal([]byte(raw), &receipt); err != nil {
-		t.Fatal(err)
-	}
-	receipt["version"], receipt["reconciliation_digest"] = 1, "stored-v1-proposal"
-	encoded, err := json.Marshal(receipt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec("update legacy_reconciliations set receipt=?,reconciliation_digest=?", string(encoded), "stored-v1-proposal"); err != nil {
-		t.Fatal(err)
-	}
-	var item string
-	if err = db.QueryRow("select item from legacy_reconciliation_items").Scan(&item); err != nil {
-		t.Fatal(err)
-	}
-	var oldItem map[string]any
-	if err = json.Unmarshal([]byte(item), &oldItem); err != nil {
-		t.Fatal(err)
-	}
-	for _, key := range []string{"original_folder", "original_memberships", "membership_changed"} {
-		delete(oldItem, key)
-	}
-	encoded, err = json.Marshal(oldItem)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec("update legacy_reconciliation_items set item=?", string(encoded)); err != nil {
-		t.Fatal(err)
-	}
-	if err = db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	e.auth.signedIn = false
-	if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || reconciliationRows(t, out)[0]["version"] != float64(1) {
-		t.Fatalf("old receipt requires auth: %d %s", code, stderr)
-	}
-	e.auth.signedIn = true
-	cfg, err := config.Load(config.DefaultPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.AccountID = ""
-	if err = config.Save(config.DefaultPath(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	e.graph.pagesErr = sql.ErrConnDone // committed-receipt repair must not enumerate
-	if code, _, _ = e.run(args...); code == 0 {
-		t.Fatal("wrong committed receipt confirmation accepted")
-	}
-	args[len(args)-1] = "stored-v1-proposal"
-	if code, _, stderr = e.run(args...); code != 0 {
-		t.Fatalf("v1 routing repair replayed binding: %d %s", code, stderr)
-	}
-	cfg, err = config.Load(config.DefaultPath())
-	if err != nil || cfg.AccountID != summary["account"] {
-		t.Fatal("same-account routing not repaired", err)
-	}
-	if len(e.graph.moved) != 0 {
-		t.Fatal("routing repair mutated mail")
+func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			e := newEnv(t)
+			seedConflictHistory(t, e, []string{"g1"}, "<g1@example.org>", "info@campaign.example.org")
+			code, out, stderr := e.run("account", "reconcile", "--json")
+			if code != 0 {
+				t.Fatal(stderr)
+			}
+			summary := reconciliationRows(t, out)[0]
+			args := []string{"account", "reconcile", "--execute", "--confirm-account", summary["account"].(string), "--confirm-history", summary["source_digest"].(string), "--confirm-reconciliation", summary["reconciliation_digest"].(string)}
+			if code, _, stderr = e.run(args...); code != 0 {
+				t.Fatal(stderr)
+			}
+			// Construct an old stored receipt only in this isolated synthetic fixture.
+			// The product has no receipt import or rewrite path.
+			db, err := sql.Open("sqlite", "file:"+e.db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw string
+			if err = db.QueryRow("select receipt from legacy_reconciliations").Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			var receipt map[string]any
+			if err = json.Unmarshal([]byte(raw), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			receipt["version"], receipt["reconciliation_digest"] = version, "stored-old-proposal"
+			encoded, err := json.Marshal(receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.Exec("update legacy_reconciliations set receipt=?,reconciliation_digest=?", string(encoded), "stored-old-proposal"); err != nil {
+				t.Fatal(err)
+			}
+			var item string
+			if err = db.QueryRow("select item from legacy_reconciliation_items").Scan(&item); err != nil {
+				t.Fatal(err)
+			}
+			var oldItem map[string]any
+			if err = json.Unmarshal([]byte(item), &oldItem); err != nil {
+				t.Fatal(err)
+			}
+			keys := []string{"recipient_casing_changed", "enumerated_state"}
+			if version == 1 {
+				keys = append(keys, "original_folder", "original_memberships", "membership_changed")
+			}
+			for _, key := range keys {
+				delete(oldItem, key)
+			}
+			encoded, err = json.Marshal(oldItem)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = db.Exec("update legacy_reconciliation_items set item=?", string(encoded)); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			e.auth.signedIn = false
+			if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || reconciliationRows(t, out)[0]["version"] != float64(version) {
+				t.Fatalf("old receipt requires auth: %d %s", code, stderr)
+			}
+			e.auth.signedIn = true
+			cfg, err := config.Load(config.DefaultPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.AccountID = ""
+			if err = config.Save(config.DefaultPath(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			e.graph.pagesErr = sql.ErrConnDone // committed-receipt repair must not enumerate
+			if code, _, _ = e.run(args...); code == 0 {
+				t.Fatal("wrong committed receipt confirmation accepted")
+			}
+			args[len(args)-1] = "stored-old-proposal"
+			if code, _, stderr = e.run(args...); code != 0 {
+				t.Fatalf("v1 routing repair replayed binding: %d %s", code, stderr)
+			}
+			cfg, err = config.Load(config.DefaultPath())
+			if err != nil || cfg.AccountID != summary["account"] {
+				t.Fatal("same-account routing not repaired", err)
+			}
+			if len(e.graph.moved) != 0 {
+				t.Fatal("routing repair mutated mail")
+			}
+		})
 	}
 }

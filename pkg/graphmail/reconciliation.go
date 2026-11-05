@@ -9,7 +9,9 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mrothroc/mailpipe/pkg/graph"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
@@ -24,7 +26,10 @@ type LegacyReference struct {
 }
 
 type LegacyEvidence struct {
-	States            map[int64]mailbox.State
+	States map[int64]mailbox.State
+	// EnumeratedStates retains the exact first observation only for accepted
+	// recipient casing differences. States retains the exact inspection result.
+	EnumeratedStates  map[int64]mailbox.State
 	Unavailable       map[int64]bool
 	Started, Finished time.Time
 	Pages, Observed   int
@@ -147,7 +152,7 @@ func (p *Provider) ReconcileLegacyReferences(ctx context.Context, refs []LegacyR
 	return p.reconcileLegacyReferences(ctx, refs, legacyMessageLimit, legacyPageLimit)
 }
 func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int) (out LegacyEvidence, err error) {
-	out = LegacyEvidence{States: map[int64]mailbox.State{}, Unavailable: map[int64]bool{}, Started: time.Now().UTC()}
+	out = LegacyEvidence{States: map[int64]mailbox.State{}, EnumeratedStates: map[int64]mailbox.State{}, Unavailable: map[int64]bool{}, Started: time.Now().UTC()}
 	// Errors never return a partial evidence capability.
 	defer func() {
 		if err != nil {
@@ -269,7 +274,8 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		if !found {
 			return out, incompleteEvidence("consistency", "reference-appeared", errors.New("reference appeared after enumeration"))
 		}
-		if !reflect.DeepEqual(observed.Metadata, state.Metadata) {
+		casingChanged := !reflect.DeepEqual(observed.Metadata, state.Metadata)
+		if casingChanged && !reconciliationRecipientCasing(observed.Metadata, state.Metadata) {
 			return out, incompleteEvidence("consistency", "metadata-changed", errors.New("metadata changed after enumeration"))
 		}
 		if e = mailbox.CheckPrecondition(p.account.ID, observed, state); e != nil {
@@ -279,7 +285,10 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		if e = mailbox.CheckPrecondition(p.account.ID, expected, state); e != nil {
 			return out, reconciliationBlock("original identity, sender or header conflicts with current evidence; preserve the mirror and request owner review")
 		}
-		out.States[r.N] = state
+		if casingChanged {
+			out.EnumeratedStates[r.N] = reconciliationObservation(observed)
+		}
+		out.States[r.N] = reconciliationObservation(state)
 	}
 	if len(out.Unavailable) > 0 && len(out.States) == 0 {
 		return out, reconciliationBlock("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference or ask the owner for an approved evidence policy")
@@ -289,4 +298,31 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 	}
 	out.Finished = time.Now().UTC()
 	return out, nil
+}
+
+// This recovery-only comparison is positional and preserves duplicate entries.
+// EqualFold is a string relationship, not RFC mailbox equivalence. The normal
+// provider/action comparator and all input strings remain unchanged.
+func reconciliationRecipientCasing(a, b mailbox.Metadata) bool {
+	if (a.Recipients == nil) != (b.Recipients == nil) || len(a.Recipients) != len(b.Recipients) {
+		return false
+	}
+	for i, left := range a.Recipients {
+		right := b.Recipients[i]
+		if left.Name != right.Name || !utf8.ValidString(left.Address) || !utf8.ValidString(right.Address) || !strings.EqualFold(left.Address, right.Address) {
+			return false
+		}
+	}
+	a.Recipients, b.Recipients = nil, nil // value copies only; never slice mutation
+	return reflect.DeepEqual(a, b)
+}
+
+func reconciliationObservation(s mailbox.State) mailbox.State {
+	if s.Metadata.Recipients != nil {
+		s.Metadata.Recipients = append([]mailbox.Address{}, s.Metadata.Recipients...)
+	}
+	if s.Memberships != nil {
+		s.Memberships = append([]mailbox.Membership{}, s.Memberships...)
+	}
+	return s
 }

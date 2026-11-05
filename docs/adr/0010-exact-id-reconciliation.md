@@ -25,7 +25,14 @@ null must not silently become a successful empty metadata value.
 
 A found original must match its exact account-bound reference, locator, header
 and sender. Enumeration and inspection must agree on current metadata, membership
-and any recorded revision. Different opaque IDs remain separate even when their headers,
+and any recorded revision, with one recovery-only exception: corresponding
+recipient address strings may differ under Go's `strings.EqualFold` Unicode
+simple case folding. Recipient slice representation, length, order and display
+names remain exact; duplicate entries are retained. All other metadata remains
+exact. There is no whitespace trimming, full-fold expansion, Unicode normalization,
+alias interpretation or global address rewriting. This is a reviewed string
+relationship on the same immutable ID, not RFC mailbox equivalence. Different
+opaque IDs remain separate even when their headers,
 senders or content match. Correlation neither blocks exact verification nor
 establishes ownership, continuity or authority to remap an original.
 
@@ -37,9 +44,14 @@ old-source collection mappings remain blocked rather than guessed.
 
 Reconciliation alone separates old mapped membership from current exact-ID
 membership. Version-2 receipt items retain the original folder and memberships,
-current state and an explicit change flag. The new proposal digest domain covers
-those fields, all dispositions, account/provider, complete history digest and
-folder mappings. The owner reviews every old-to-current change and confirms ALL
+current state and an explicit change flag. Version-3 items additionally retain
+`enumerated_state` for each accepted recipient casing difference, alongside the
+exact inspection `state` and derived `recipient_casing_changed` flag. The store
+independently validates each indexed pair and owns copies of the evidence. The
+proposal digest covers both exact observations and both change flags, all
+dispositions, account/provider, complete history digest and folder mappings.
+No casing is normalized in stored observations or the digest. The owner reviews
+every old-to-current change and casing pair and confirms ALL
 history using the exact account, history and reconciliation confirmations.
 Execute regenerates evidence under exclusive lifecycle ownership; changed
 evidence requires a fresh preview and review.
@@ -54,11 +66,21 @@ another ID retains or receives a separate number and no copied provenance.
 Newly observed nonhistorical IDs are not published during attribution. Historical
 pending plans remain readable and cannot acquire execution preconditions.
 
-Receipt JSON evolves within the existing schema. Committed version-1 receipts
+Receipt JSON evolves within the existing schema. New proposals use version 3
+and digest domain `mailpipe-legacy-reconciliation-v3`, including when no casing
+differs. Pending version-1 or version-2 confirmations cannot authorize new binding.
+Committed version-1 and version-2 receipts
 remain offline audit records and support same-account routing repair with their
 exact stored confirmations. They are not rewritten or replayed as new binding
-evidence. Version-1 pending proposals cannot authorize version-2 attribution.
+evidence.
 No receipt, design, classification or capability grants mailbox action approval.
+
+Unicode folding follows the checked Go compiler's tables. Keep the existing
+[compiler policy](../development.md#build-gate) and version sources in
+[go.mod](../../go.mod) and [CI](../../.github/workflows/ci.yml); no separate
+Unicode canonicalizer or exact compiler pin is introduced. Table changes can
+affect which pairs pass, but the digest always hashes the raw pair, not folded
+keys. Changed casing alone therefore requires fresh review.
 
 ## Alternatives and consequences
 
