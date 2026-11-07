@@ -9,10 +9,16 @@ import (
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
 )
 
-// Recovery metadata equality permits only address casing on an already exact
-// immutable reference. It is not RFC mailbox equivalence or the action policy.
+// Recovery metadata equality permits address casing and sender presentation
+// changes on an already exact immutable reference. This is neither RFC mailbox
+// equivalence nor the action policy.
 // Clearing fields changes value copies only, never input recipient arrays.
-func reconciliationAddressCasing(a, b mailbox.Metadata) bool {
+func reconciliationMetadataMatches(a, b mailbox.Metadata) bool {
+	// Changed names must survive JSON receipt encoding without byte replacement.
+	// Identical names retain existing address-only comparison semantics.
+	if a.Sender.Name != b.Sender.Name && (!utf8.ValidString(a.Sender.Name) || !utf8.ValidString(b.Sender.Name)) {
+		return false
+	}
 	if !utf8.ValidString(a.Sender.Address) || !utf8.ValidString(b.Sender.Address) || !strings.EqualFold(a.Sender.Address, b.Sender.Address) {
 		return false
 	}
@@ -30,6 +36,7 @@ func reconciliationAddressCasing(a, b mailbox.Metadata) bool {
 		}
 	}
 	a.Sender.Address, b.Sender.Address = "", ""
+	a.Sender.Name, b.Sender.Name = "", ""
 	a.Recipients, b.Recipients = nil, nil
 	return reflect.DeepEqual(a, b)
 }

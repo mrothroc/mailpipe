@@ -28,15 +28,16 @@ func TestReconciliationSenderPairReview(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sender pair rejected: %v", err)
 			}
-			if r.Version != 4 {
-				t.Fatal("new proposal must use v4")
+			if r.Version != 5 {
+				t.Fatal("new proposal must use v5")
 			}
 			raw, _ := json.Marshal(r.Items[0])
 			var item struct {
 				Sender    bool `json:"sender_casing_changed"`
+				Name      bool `json:"sender_name_changed"`
 				Recipient bool `json:"recipient_casing_changed"`
 			}
-			if err = json.Unmarshal(raw, &item); err != nil || !item.Sender || item.Recipient != combined {
+			if err = json.Unmarshal(raw, &item); err != nil || !item.Sender || item.Name || item.Recipient != combined {
 				t.Fatal("flags not independently derived")
 			}
 			if r.Items[0].EnumeratedState.Metadata.Sender.Address != e.Metadata.Sender.Address || r.Items[0].State.Metadata.Sender.Address != s.Metadata.Sender.Address {
@@ -93,7 +94,7 @@ func TestReconciliationSenderPairValidationAndRawDigest(t *testing.T) {
 		}
 		return x
 	}
-	for _, kind := range []string{"trim", "joint", "alias", "dot", "different", "name", "invalid", "header", "subject", "recipient-name", "recipient-order", "revision", "membership", "account", "id"} {
+	for _, kind := range []string{"trim", "joint", "alias", "dot", "different", "name-invalid", "invalid", "header", "subject", "recipient-name", "recipient-order", "revision", "membership", "account", "id"} {
 		t.Run(kind, func(t *testing.T) {
 			x := clone()
 			e := x.EnumeratedStates[n]
@@ -108,8 +109,8 @@ func TestReconciliationSenderPairValidationAndRawDigest(t *testing.T) {
 				e.Metadata.Sender.Address = "sen.der@example.org"
 			case "different":
 				e.Metadata.Sender.Address = "other@example.org"
-			case "name":
-				e.Metadata.Sender.Name = "Changed"
+			case "name-invalid":
+				e.Metadata.Sender.Name = string([]byte{0xff})
 			case "invalid":
 				e.Metadata.Sender.Address = string([]byte{0xff})
 			case "header":

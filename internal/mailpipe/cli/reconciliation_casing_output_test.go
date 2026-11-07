@@ -26,11 +26,13 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 			dir := t.TempDir()
 			agent := agentio.New("account reconcile", agentio.WithJSON(jsonMode), agentio.WithStdout(&out), agentio.WithStderr(&stderr), agentio.WithOverflowDir(dir), agentio.WithLimit(1))
 			current, enumerated := mailbox.State{Metadata: mailbox.Metadata{Sender: mailbox.Address{Address: "SENDER@Example.org"}}}, mailbox.State{Metadata: mailbox.Metadata{Sender: mailbox.Address{Address: "sender@example.org"}}}
+			current.Metadata.Sender.Name = "Current-" + strings.Repeat("名", 4096) + secret + "\x1b\u202e"
+			enumerated.Metadata.Sender.Name = "Original-" + strings.Repeat("名", 4096) + secret + "\x1b\u202e"
 			for i := 0; i < 256; i++ {
 				current.Metadata.Recipients = append(current.Metadata.Recipients, mailbox.Address{Address: fmt.Sprintf("reader%d@example.org", i), Name: secret + "\x1b\u202e"})
 				enumerated.Metadata.Recipients = append(enumerated.Metadata.Recipients, mailbox.Address{Address: fmt.Sprintf("Reader%d@Example.org", i), Name: secret + "\x1b\u202e"})
 			}
-			r := store.LegacyReconciliationReceipt{Version: 4, Items: []store.LegacyReconciliationItem{{N: 9007199254740993, Disposition: "verified", State: &current, EnumeratedState: &enumerated, RecipientCasingChanged: true, SenderCasingChanged: true}}}
+			r := store.LegacyReconciliationReceipt{Version: 5, Items: []store.LegacyReconciliationItem{{N: 9007199254740993, Disposition: "verified", State: &current, EnumeratedState: &enumerated, RecipientCasingChanged: true, SenderCasingChanged: true, SenderNameChanged: true}}}
 			if err := reconciliationOutput(agent, "review", r); err != nil {
 				t.Fatal(err)
 			}
@@ -62,7 +64,7 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 				if err = json.Unmarshal([]byte(lines[len(lines)-1]), &row); err != nil {
 					t.Fatal(err)
 				}
-				if row["recipient_casing_changed"] != true || row["sender_casing_changed"] != true {
+				if row["recipient_casing_changed"] != true || row["sender_casing_changed"] != true || row["sender_name_changed"] != true {
 					t.Fatal("missing review flag")
 				}
 				left = row["enumerated_state"].(map[string]any)
@@ -74,6 +76,10 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 				}
 				for i, key := range header {
 					switch key {
+					case "sender_name_changed", "sender_casing_changed", "recipient_casing_changed":
+						if cells[i] != "true" {
+							t.Fatal("TSV omitted review flag")
+						}
 					case "enumerated_state":
 						err = json.Unmarshal([]byte(cells[i]), &left)
 					case "state":
@@ -89,7 +95,7 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 					t.Fatal("recipient pair truncated")
 				}
 			}
-			for _, want := range []string{"Reader0@Example.org", "Reader255@Example.org", "reader0@example.org", "reader255@example.org", "9007199254740993", "SENDER@Example.org", "sender@example.org"} {
+			for _, want := range []string{"Reader0@Example.org", "Reader255@Example.org", "reader0@example.org", "reader255@example.org", "9007199254740993", "SENDER@Example.org", "sender@example.org", "Current-" + strings.Repeat("名", 4096), "Original-" + strings.Repeat("名", 4096)} {
 				if !strings.Contains(string(raw), want) {
 					t.Fatal("raw reviewed pair or integer lost")
 				}

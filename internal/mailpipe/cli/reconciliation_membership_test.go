@@ -1,9 +1,11 @@
 package cli_test
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/mrothroc/mailpipe/pkg/graphmail"
 	"strings"
 	"testing"
 
@@ -42,7 +44,7 @@ func TestReconciliationReviewsDistinctIDsAndMembershipChanges(t *testing.T) {
 	}
 	summary := rows[0]
 	for _, row := range rows[1:] {
-		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(4) {
+		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(5) {
 			t.Fatal("incomplete original evidence", row)
 		}
 		old := row["original_memberships"].([]any)[0].(map[string]any)["Collection"].(map[string]any)["CollectionID"]
@@ -82,10 +84,21 @@ func TestReconciliationReviewsDistinctIDsAndMembershipChanges(t *testing.T) {
 }
 
 func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
-	for _, version := range []int{1, 2, 3} {
+	for _, version := range []int{1, 2, 3, 4} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			e := newEnv(t)
 			seedConflictHistory(t, e, []string{"g1"}, "<g1@example.org>", "info@campaign.example.org")
+			if version == 4 {
+				subject, err := e.auth.Subject(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				g := &senderCasingGraph{casingGraph: &casingGraph{fakeGraph: e.graph, listed: "Reader@Example.org", inspected: "reader@example.org"}, sender: "INFO@CAMPAIGN.EXAMPLE.ORG"}
+				e.provider, err = graphmail.New(g, subject.Account())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			code, out, stderr := e.run("account", "reconcile", "--json")
 			if code != 0 {
 				t.Fatal(stderr)
@@ -125,7 +138,10 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if err = json.Unmarshal([]byte(item), &oldItem); err != nil {
 				t.Fatal(err)
 			}
-			keys := []string{"sender_casing_changed"}
+			keys := []string{"sender_name_changed"}
+			if version < 4 {
+				keys = append(keys, "sender_casing_changed")
+			}
 			if version < 3 {
 				keys = append(keys, "recipient_casing_changed", "enumerated_state")
 			}
@@ -140,6 +156,11 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err = db.Exec("update legacy_reconciliation_items set item=?", string(encoded)); err != nil {
+				t.Fatal(err)
+			}
+			frozenItem := string(encoded)
+			var frozenReceipt string
+			if err = db.QueryRow("select receipt from legacy_reconciliations").Scan(&frozenReceipt); err != nil {
 				t.Fatal(err)
 			}
 			if err = db.Close(); err != nil {
@@ -173,6 +194,25 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if len(e.graph.moved) != 0 {
 				t.Fatal("routing repair mutated mail")
 			}
+			db, err = sql.Open("sqlite", "file:"+e.db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var afterItem, afterReceipt string
+			if err = db.QueryRow("select item from legacy_reconciliation_items").Scan(&afterItem); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.QueryRow("select receipt from legacy_reconciliations").Scan(&afterReceipt); err != nil {
+				t.Fatal(err)
+			}
+			db.Close()
+			if afterItem != frozenItem || afterReceipt != frozenReceipt {
+				t.Fatal("old committed evidence rewritten")
+			}
+			if version == 4 && (!strings.Contains(afterItem, `"sender_casing_changed":true`) || !strings.Contains(afterItem, `"recipient_casing_changed":true`) || !strings.Contains(afterItem, "Reader@Example.org")) {
+				t.Fatal("v4 raw address pair lost")
+			}
+
 		})
 	}
 }
