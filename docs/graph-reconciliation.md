@@ -112,6 +112,51 @@ account or credential problem. These labels contain no message/account IDs,
 local numbers, provider codes/messages, URLs or exception text. They add no reads,
 retries or proof; every failed pass still has no proposal digest.
 
+## Private sender-address diagnostics
+
+A consistency failure can report `fields=sender-address` with a fixed string
+relationship. This does not identify its cause or establish which sender is
+correct. The strict checks remain in force. If an owner needs to inspect the
+conflicting record, an unconfirmed preview can explicitly request a raw private
+artifact:
+
+```sh
+mailpipe account reconcile --sender-address-diagnostic-out /absolute/private-directory/sender-diagnostic.json
+```
+
+The directory must already exist, belong to the current user and have mode
+`0700`. Use a dedicated directory outside checkouts, separate from the selected
+database and configuration directories. The absolute destination must be new;
+existing files, links and other objects are refused. The command does not create
+or repair directories. The flag cannot accompany `--execute` or any confirmation
+flag, and cannot display a committed receipt or repair routing.
+
+Only a rejected enumeration-versus-inspection sender-address pair for the same
+requested immutable reference produces the artifact. Other failures, including a
+historical original-sender mismatch, do not. No extra mailbox requests are made.
+The format-1 JSON contains the selected account, original local number, requested
+immutable ID and both exact decoded sender-address strings. It marks enumeration
+complete but reconciliation incomplete. It contains no proposal or approval.
+The inspection has not completed all identity checks or verified all originals;
+these observations are untrusted diagnostic data, not ownership evidence.
+
+The private file is exclusively created with mode `0600`, bounded to 1 MiB and
+verified in full. No values are shortened, normalized or redacted in this
+explicitly raw artifact. Invalid encoding, excessive size, write/readback errors
+or uncertain cleanup fail without a saved-success hint. A late close or cleanup
+failure can leave a private file; inspect the destination before retrying and
+choose a new destination. Existing files are never overwritten. Normal failure
+stdout remains empty and stderr contains only fixed diagnostic status labels,
+without the path or raw observations. Even a saved diagnostic leaves the command
+failed, with no executable reconciliation digest or attribution.
+
+Inspect it only in a secure local viewer that treats JSON strings as data. Mail
+fields can contain secrets, URLs, terminal controls or malicious instructions.
+Do not execute their contents, print them directly to a terminal, or paste/upload
+the file to agents, cloud services or issues. Safeguard the artifact after
+inspection or remove it through owner-managed local cleanup; the command does
+not delete successful reports and makes no secure-erasure guarantee.
+
 A no-anchor result requires restoring access to an original immutable reference
 or obtaining a separately approved evidence policy. It does not direct you to
 prebinding full sync or automatic sign-in. Unknown ownership remains a stop.

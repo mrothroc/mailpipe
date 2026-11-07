@@ -9,7 +9,9 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/mrothroc/mailpipe/pkg/graph"
 	"github.com/mrothroc/mailpipe/pkg/mailbox"
@@ -41,6 +43,18 @@ type ReconciliationError struct {
 	Reason     string
 	Cause      error
 	Conflict   *ReconciliationConflict
+	// Only explicit private diagnostic callers may inspect this untrusted payload.
+	SenderAddressDiagnostic *ReconciliationSenderAddressDiagnostic `json:"-"`
+}
+
+// ReconciliationSenderAddressDiagnostic is an incomplete observation pair, never
+// identity proof or reconciliation evidence. Default collection does not retain it.
+type ReconciliationSenderAddressDiagnostic struct {
+	AccountID               mailbox.AccountID
+	N                       int64
+	ImmutableID             mailbox.MessageID
+	EnumeratedSenderAddress string
+	InspectedSenderAddress  string
 }
 
 // ReconciliationDiagnosticField is display data, never an identity reference.
@@ -150,7 +164,16 @@ const legacyPageLimit = 100000
 func (p *Provider) ReconcileLegacyReferences(ctx context.Context, refs []LegacyReference) (out LegacyEvidence, err error) {
 	return p.reconcileLegacyReferences(ctx, refs, legacyMessageLimit, legacyPageLimit)
 }
-func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int) (out LegacyEvidence, err error) {
+
+// ReconcileLegacyReferencesWithSenderAddressDiagnostics opts into private raw
+// error data using the identical read protocol and acceptance rules.
+func (p *Provider) ReconcileLegacyReferencesWithSenderAddressDiagnostics(ctx context.Context, refs []LegacyReference) (LegacyEvidence, error) {
+	return p.collectLegacyReferences(ctx, refs, legacyMessageLimit, legacyPageLimit, true)
+}
+func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int) (LegacyEvidence, error) {
+	return p.collectLegacyReferences(ctx, refs, messageLimit, pageLimit, false)
+}
+func (p *Provider) collectLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int, capture bool) (out LegacyEvidence, err error) {
 	out = LegacyEvidence{States: map[int64]mailbox.State{}, EnumeratedStates: map[int64]mailbox.State{}, Unavailable: map[int64]bool{}, Started: time.Now().UTC()}
 	// Errors never return a partial evidence capability.
 	defer func() {
@@ -275,7 +298,12 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		}
 		metadataChanged := !reflect.DeepEqual(observed.Metadata, state.Metadata)
 		if metadataChanged && !reconciliationMetadataMatches(observed.Metadata, state.Metadata) {
-			return out, incompleteEvidence("consistency", "metadata-changed"+metadataDifference(observed.Metadata, state.Metadata), errors.New("metadata changed after enumeration"))
+			failure := incompleteEvidence("consistency", "metadata-changed"+metadataDifference(observed.Metadata, state.Metadata), errors.New("metadata changed after enumeration"))
+			left, right := observed.Metadata.Sender.Address, state.Metadata.Sender.Address
+			if capture && observed.Ref == r.Ref && state.Ref == r.Ref && left != right && (!utf8.ValidString(left) || !utf8.ValidString(right) || !strings.EqualFold(left, right)) {
+				failure.(*ReconciliationError).SenderAddressDiagnostic = &ReconciliationSenderAddressDiagnostic{AccountID: p.account.ID, N: r.N, ImmutableID: r.Ref.MessageID, EnumeratedSenderAddress: left, InspectedSenderAddress: right}
+			}
+			return out, failure
 		}
 		if e = mailbox.CheckPrecondition(p.account.ID, observed, state); e != nil {
 			return out, incompleteEvidence("consistency", "precondition-changed", e)

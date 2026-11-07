@@ -21,10 +21,15 @@ type legacyEvidenceProvider interface {
 	ReconcileLegacyReferences(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error)
 }
 
+type senderAddressEvidenceProvider interface {
+	ReconcileLegacyReferencesWithSenderAddressDiagnostics(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error)
+}
+
 type reconciliationVerifier struct {
-	provider  mailbox.Provider
-	confirmed bool
-	report    store.LegacyReconciliationReceipt
+	senderDiagnostics bool
+	provider          mailbox.Provider
+	confirmed         bool
+	report            store.LegacyReconciliationReceipt
 }
 
 func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.Account, p store.LegacyPreparation) (proof store.LegacyReconciliation, err error) {
@@ -43,6 +48,11 @@ func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.
 	if !ok {
 		return proof, &mailbox.UnsupportedError{Operation: "Graph legacy reconciliation evidence"}
 	}
+	if v.senderDiagnostics {
+		if _, ok := v.provider.(senderAddressEvidenceProvider); !ok {
+			return proof, &graphmail.ReconciliationError{Reason: "sender-address diagnostics unsupported by this provider"}
+		}
+	}
 	refs := make([]graphmail.LegacyReference, 0, len(p.Live))
 	for _, m := range p.Live {
 		scope, ok := proof.Verification.Folders[m.Folder]
@@ -60,7 +70,14 @@ func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.
 		}
 		refs = append(refs, graphmail.LegacyReference{N: m.N, Ref: mailbox.MessageRef{AccountID: a.ID, MessageID: mailbox.MessageID(m.GraphID), Locator: mailbox.Locator(m.GraphID)}, InternetMessageID: m.InternetMessageID, Sender: m.Sender, Collection: scope})
 	}
-	evidence, e := collector.ReconcileLegacyReferences(ctx, refs)
+	var evidence graphmail.LegacyEvidence
+	var e error
+	if v.senderDiagnostics {
+		diagnosticCollector := v.provider.(senderAddressEvidenceProvider)
+		evidence, e = diagnosticCollector.ReconcileLegacyReferencesWithSenderAddressDiagnostics(ctx, refs)
+	} else {
+		evidence, e = collector.ReconcileLegacyReferences(ctx, refs)
+	}
 	if e != nil {
 		return proof, e
 	}
@@ -243,7 +260,7 @@ func reconciliationOutput(agent *agentio.AgentIO, status string, r store.LegacyR
 	}, func(row map[string]any) map[string]any { return row })
 }
 func newReconcileCommand(deps Deps) *cobra.Command {
-	cmd := newAgentCommand("reconcile", "Review unavailable Graph references and explicitly attribute preserved history", cobra.NoArgs, func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) error {
+	cmd := newAgentCommand("reconcile", "Review unavailable Graph references and explicitly attribute preserved history", cobra.NoArgs, func(cmd *cobra.Command, agent *agentio.AgentIO, _ []string) (result error) {
 		if e := pilotGuard(cmd, "Graph historical reconciliation"); e != nil {
 			return e
 		}
@@ -252,6 +269,23 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 		confirmA, _ := cmd.Flags().GetString("confirm-account")
 		confirmD, _ := cmd.Flags().GetString("confirm-history")
 		confirmR, _ := cmd.Flags().GetString("confirm-reconciliation")
+		diagnosticPath, _ := cmd.Flags().GetString("sender-address-diagnostic-out")
+		var diagnostic *senderDiagnosticOutput
+		if cmd.Flags().Changed("sender-address-diagnostic-out") {
+			if cmd.Flags().Changed("execute") || cmd.Flags().Changed("confirm-account") || cmd.Flags().Changed("confirm-history") || cmd.Flags().Changed("confirm-reconciliation") {
+				return agentio.NewUsageError("sender-address diagnostics require an unconfirmed preview", "mailpipe account reconcile --help")
+			}
+			var err error
+			diagnostic, err = openSenderDiagnostic(diagnosticPath, dbPath(cmd), config.DefaultPath())
+			if err != nil {
+				return &reconciliationFailure{mapped: agentio.NewUsageError("unsafe sender-address diagnostic destination", "use a new absolute file in a separate existing owner-only directory"), cause: err}
+			}
+			defer func() {
+				if err := diagnostic.close(); err != nil {
+					result = senderDiagnosticClosureFailure(result, err)
+				}
+			}()
+		}
 		cfg, e := routing()
 		if e != nil {
 			return e
@@ -263,6 +297,9 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 				return receiptError(e)
 			}
 			if found {
+				if diagnostic != nil {
+					return agentio.NewUsageError("sender-address diagnostics require a fresh unbound preview", "mailpipe account reconcile")
+				}
 				return reconciliationOutput(agent, "bound", receipt)
 			}
 		}
@@ -306,7 +343,7 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		verifier := &reconciliationVerifier{provider: p, confirmed: execute && confirmD == prep.Digest()}
+		verifier := &reconciliationVerifier{provider: p, senderDiagnostics: diagnostic != nil, confirmed: execute && confirmD == prep.Digest()}
 		if execute && !verifier.confirmed {
 			return agentio.NewUsageError("history changed or was not reviewed", "mailpipe account reconcile")
 		}
@@ -329,12 +366,21 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 			status = "bound"
 		} else {
 			if _, e = verifier.ReconcileLegacy(ctx, p.Account(), prep); e != nil {
+				if diagnostic != nil {
+					return diagnostic.failure(ctx, agent, e)
+				}
 				return reconciliationFailureOutput(agent, e)
+			}
+			if diagnostic != nil {
+				if err := diagnostic.close(); err != nil {
+					return senderDiagnosticClosureFailure(nil, err)
+				}
 			}
 			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition, old-to-current membership change, address casing pair and sender display-name pair, and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
 		}
 		return reconciliationOutput(agent, status, verifier.report)
 	})
+	cmd.Flags().String("sender-address-diagnostic-out", "", "write one blocked sender-address observation pair to a new owner-private file (preview only)")
 	cmd.Flags().Bool("execute", false, "bind only the freshly regenerated owner-reviewed reconciliation")
 	cmd.Flags().String("confirm-account", "", "exact reviewed immutable account")
 	cmd.Flags().String("confirm-history", "", "exact reviewed complete historical inventory digest")

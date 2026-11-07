@@ -106,6 +106,17 @@ Trimming is diagnostic only, never accepted evidence. Labels disclose no values,
 add no reads and cannot authorize a proposal or action. Cause identity and zero
 evidence on failure remain unchanged.
 
+An explicit preview-only sender-address diagnostic can retain one rejected
+same-reference enumeration/inspection pair in an owner-only, bounded private
+file. Default collection retains no new raw error payload, and ordinary errors
+remain value-free. This optional observation contains no proof or proposal;
+strict acceptance, v5 receipts, digests and all attribution guards are unchanged.
+It cannot accompany execution/confirmation or committed receipt use. Exclusive
+rooted creation, privacy/identity checks and complete write/readback/closure
+precede any saved hint. Uncertain output remains failed and non-authoritative.
+See the [private diagnostic workflow](../graph-reconciliation.md#private-sender-address-diagnostics)
+for safe inspection, storage and owner-managed cleanup of untrusted raw data.
+
 ## Alternatives and consequences
 
 Blanket correlation blocking prevents independent verification. Header/content

@@ -36,6 +36,11 @@ func collectSenderCasing(t *testing.T, sender string, before, after []mailbox.Ad
 
 func collectObservations(t *testing.T, sender string, before, after []mailbox.Address, listedChange, change func(map[string]any)) (graphmail.LegacyEvidence, error) {
 	t.Helper()
+	return collectDiagnosticObservations(t, false, sender, before, after, listedChange, change)
+}
+
+func collectDiagnosticObservations(t *testing.T, capture bool, sender string, before, after []mailbox.Address, listedChange, change func(map[string]any)) (graphmail.LegacyEvidence, error) {
+	t.Helper()
 	box := &serverBox{folders: map[string]string{"one": "inbox"}, sender: sender}
 	pages, inspections := 0, 0
 	srv := httptest.NewServer(readOnlyBatchHandler(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +75,19 @@ func collectObservations(t *testing.T, sender string, before, after []mailbox.Ad
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := p.ReconcileLegacyReferences(context.Background(), []graphmail.LegacyReference{{N: 1, Ref: mailbox.MessageRef{AccountID: account.ID, MessageID: "one", Locator: "one"}, InternetMessageID: "<one@example.org>", Sender: sender, Collection: mailbox.CollectionRef{AccountID: account.ID, CollectionID: "inbox"}}})
+	refs := []graphmail.LegacyReference{{N: 1, Ref: mailbox.MessageRef{AccountID: account.ID, MessageID: "one", Locator: "one"}, InternetMessageID: "<one@example.org>", Sender: sender, Collection: mailbox.CollectionRef{AccountID: account.ID, CollectionID: "inbox"}}}
+	var proof graphmail.LegacyEvidence
+	if capture {
+		if c, ok := any(p).(interface {
+			ReconcileLegacyReferencesWithSenderAddressDiagnostics(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error)
+		}); ok {
+			proof, err = c.ReconcileLegacyReferencesWithSenderAddressDiagnostics(context.Background(), refs)
+		} else {
+			proof, err = p.ReconcileLegacyReferences(context.Background(), refs)
+		}
+	} else {
+		proof, err = p.ReconcileLegacyReferences(context.Background(), refs)
+	}
 	if pages != 1 || inspections != 1 {
 		t.Fatalf("changed read count: pages=%d inspections=%d", pages, inspections)
 	}
