@@ -24,7 +24,7 @@ func TestCasingComparisonRepresentationAndOwnership(t *testing.T) {
 				b.Recipients[0].Address = "e\u0301@example.org"
 			}
 			beforeA, beforeB := reconciliationObservation(mailbox.State{Metadata: a}), reconciliationObservation(mailbox.State{Metadata: b})
-			if reconciliationAddressCasing(a, b) != (kind == "valid") {
+			if reconciliationMetadataMatches(a, b) != (kind == "valid") {
 				t.Fatal("incorrect scoped comparison")
 			}
 			if !reflect.DeepEqual(a, beforeA.Metadata) || !reflect.DeepEqual(b, beforeB.Metadata) {

@@ -30,10 +30,11 @@ coverage and observation times, counts, and **every message disposition**:
   `original_memberships`, the current memberships in `state`, and
   `membership_changed`. A collection change is explicit old-to-current evidence,
   not an identity replacement; every change requires owner review. If
-  `sender_casing_changed` or `recipient_casing_changed` is true, compare the exact `enumerated_state` with
-  inspection `state`. Only sender and indexed recipient address casing may differ; names,
-  order, duplicates and every other metadata field remain strict. Review the
-  complete pair, including private overflow output.
+  `sender_casing_changed`, `recipient_casing_changed` or `sender_name_changed`
+  is true, compare the exact `enumerated_state` with inspection `state`. Sender
+  display names and sender/indexed-recipient address casing are separate reviewed
+  differences. Recipient names, order, duplicates and other metadata stay strict.
+  Review the complete pair, including private overflow output.
 - `unavailable`: a completed enumeration did not observe this exact ID, and a
   subsequent exact lookup returned Graph's recognized item-not-found response.
   The original row remains history, with no invented current membership/revision.
@@ -48,7 +49,8 @@ incomplete run produces no executable proposal digest.
 
 Only if the owner knows that **all** history belongs to the displayed account,
 including every unavailable row, and approves every displayed old-to-current
-membership change and address casing pair, obtain specific approval for local attribution:
+membership change, address casing pair and sender display-name pair, obtain
+specific approval for local attribution:
 
 ```text
 mailpipe account reconcile --execute --confirm-account <account> --confirm-history <history-digest> --confirm-reconciliation <reconciliation-digest>
@@ -131,22 +133,26 @@ and [immutable-ID guidance](https://learn.microsoft.com/en-us/graph/outlook-immu
 A found original must match its exact immutable reference, header and sender.
 A different collection is accepted only as explicit reviewed state in this
 reconciliation path. Enumeration and inspection must agree on current metadata,
-membership and any recorded revision, except the reviewed same-ID sender and recipient
-address casing rule. It uses Unicode simple case folding (`strings.EqualFold`)
+membership and any recorded revision, except reviewed same-ID sender display-name
+differences and sender/recipient address casing. The name exception preserves both exact decoded observations;
+changed names must be valid UTF-8. It does not normalize names or assert that two
+display names identify the same person or owner. The address rule is unchanged:
+it uses Unicode simple case folding (`strings.EqualFold`)
 without trimming, sorting, alias expansion or Unicode normalization. It does
 not establish RFC mailbox equivalence. Original spellings remain in both states;
 no address is globally lowercased. Strict `account bind`, ordinary sync and action-plan
 preconditions retain their existing comparisons. An unavailable historical
 source-folder mapping remains blocked; no name or collection is guessed.
 
-New proposals and receipts use JSON version 4 and a separate digest domain.
+New proposals and receipts use JSON version 5 and a separate digest domain.
 The proposal covers original and current membership evidence for every live
-original, plus both exact observations for accepted casing differences, alongside
-the account, complete source digest, folder mappings and all dispositions.
-Changing either spelling changes the proposal digest even when folding still
-matches. A version-1, version-2 or version-3 pending proposal cannot execute a new binding;
-obtain a fresh preview. Committed version-1, version-2 and version-3 receipts remain readable offline and
-retain their exact-confirmation routing-repair behavior. They are not rewritten,
+original, plus both exact observations and derived flags for accepted
+address-casing or sender-name differences, alongside the account, complete source
+digest, folder mappings and all dispositions.
+Changing either raw observation changes the proposal digest even when the
+relationship remains permitted. A version-1 through version-4 pending proposal
+cannot execute a new binding; obtain a fresh preview. Committed version-1 through
+version-4 receipts remain readable offline and retain their exact-confirmation routing-repair behavior. They are not rewritten,
 reinterpreted as new evidence or replayed through binding. See the
 [exact-ID reconciliation decision](adr/0010-exact-id-reconciliation.md).
 
@@ -180,7 +186,7 @@ and immutable-ID preference.
 
 The [schema and migration implementation](../pkg/store/migration.go) defines the
 current version and recognized upgrade paths. The existing reconciliation
-receipt tables use the verified backup/migration mechanism; the version-3 JSON
+receipt tables use the verified backup/migration mechanism; the versioned JSON
 review format requires no schema change. Unknown shapes, extensions and future
 versions remain refused. Ordinary bound stores gain empty
 receipt tables without a new attribution. Older binaries refuse newer schemas.

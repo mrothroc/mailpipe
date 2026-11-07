@@ -60,7 +60,7 @@ func TestReconcileSenderCasingReview(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("sender preview: %d %s", code, stderr)
 			}
-			if !strings.Contains(out, `"sender_casing_changed":true`) || !strings.Contains(out, `"version":4`) || !strings.Contains(out, "SENDER@Example.org") || !strings.Contains(out, "sender@example.org") {
+			if !strings.Contains(out, `"sender_casing_changed":true`) || !strings.Contains(out, `"version":5`) || !strings.Contains(out, "SENDER@Example.org") || !strings.Contains(out, "sender@example.org") {
 				t.Fatal("missing raw sender review")
 			}
 			rows := reconciliationRows(t, out)

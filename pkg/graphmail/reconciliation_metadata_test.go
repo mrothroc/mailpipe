@@ -21,14 +21,14 @@ func TestMetadataRelationsAreDiagnosticOnly(t *testing.T) {
 	b.Sender.Address = "sender@example.org"
 	b.Recipients[0].Address = "reader@example.org"
 	oldA, oldB := reconciliationObservation(mailbox.State{Metadata: a}), reconciliationObservation(mailbox.State{Metadata: b})
-	if !reconciliationAddressCasing(a, b) {
+	if !reconciliationMetadataMatches(a, b) {
 		t.Fatal("combined address case rejected")
 	}
 	_ = metadataDifference(a, b)
 	if !reflect.DeepEqual(a, oldA.Metadata) || !reflect.DeepEqual(b, oldB.Metadata) {
 		t.Fatal("comparison/diagnostics mutated metadata")
 	}
-	for _, kind := range []string{"sender-trim", "sender-invalid", "recipient-trim", "recipient-invalid", "sender-name", "recipient-name", "nil-empty"} {
+	for _, kind := range []string{"sender-trim", "sender-invalid", "recipient-trim", "recipient-invalid", "sender-name-invalid", "recipient-name", "nil-empty"} {
 		t.Run(kind, func(t *testing.T) {
 			x, y := reconciliationObservation(mailbox.State{Metadata: a}).Metadata, reconciliationObservation(mailbox.State{Metadata: b}).Metadata
 			switch kind {
@@ -40,15 +40,15 @@ func TestMetadataRelationsAreDiagnosticOnly(t *testing.T) {
 				y.Recipients[0].Address = " reader@example.org "
 			case "recipient-invalid":
 				y.Recipients[0].Address = string([]byte{0xfe})
-			case "sender-name":
-				y.Sender.Name = "SENDER"
+			case "sender-name-invalid":
+				y.Sender.Name = string([]byte{0xff})
 			case "recipient-name":
 				y.Recipients[0].Name = "READER"
 			case "nil-empty":
 				x.Recipients = nil
 				y.Recipients = []mailbox.Address{}
 			}
-			if reconciliationAddressCasing(x, y) {
+			if reconciliationMetadataMatches(x, y) {
 				t.Fatal("diagnostic relation relaxed acceptance")
 			}
 		})
@@ -103,4 +103,27 @@ func TestMetadataDiagnosticFieldsAndPrivacyBound(t *testing.T) {
 	}
 	// Future non-address Metadata fields remain in the fixed unknown-field
 	// fallback; there is no such extra field to instantiate in this version.
+}
+
+func TestMetadataSenderNameEncodingAndOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		before, after string
+		ok            bool
+	}{{"Before", "After", true}, {"", "Name", true}, {" Name ", "Name", true}, {"Émetteur", "送信者", true}, {string([]byte{0xff}), "Name", false}, {"Name", string([]byte{0xff}), false}, {string([]byte{0xff}), string([]byte{0xfe}), false}, {string([]byte{0xff}), string([]byte{0xff}), true}} {
+		a := mailbox.Metadata{Sender: mailbox.Address{Address: "sender@example.org", Name: tc.before}}
+		b := a
+		b.Sender.Address = "SENDER@Example.org"
+		b.Sender.Name = tc.after
+		oldA, oldB := a, b
+		if reconciliationMetadataMatches(a, b) != tc.ok {
+			t.Fatal("wrong changed-name encoding policy")
+		}
+		if !reflect.DeepEqual(a, oldA) || !reflect.DeepEqual(b, oldB) {
+			t.Fatal("comparison rewrote names")
+		}
+		b.Subject = "Other"
+		if reconciliationMetadataMatches(a, b) {
+			t.Fatal("name exception masked other metadata")
+		}
+	}
 }

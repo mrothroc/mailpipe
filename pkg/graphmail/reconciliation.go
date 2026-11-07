@@ -26,7 +26,8 @@ type LegacyReference struct {
 type LegacyEvidence struct {
 	States map[int64]mailbox.State
 	// EnumeratedStates retains the exact first observation only for accepted
-	// address casing differences. States retains the exact inspection result.
+	// address casing or sender-name differences. States retains the exact
+	// inspection result.
 	EnumeratedStates  map[int64]mailbox.State
 	Unavailable       map[int64]bool
 	Started, Finished time.Time
@@ -272,8 +273,8 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		if !found {
 			return out, incompleteEvidence("consistency", "reference-appeared", errors.New("reference appeared after enumeration"))
 		}
-		casingChanged := !reflect.DeepEqual(observed.Metadata, state.Metadata)
-		if casingChanged && !reconciliationAddressCasing(observed.Metadata, state.Metadata) {
+		metadataChanged := !reflect.DeepEqual(observed.Metadata, state.Metadata)
+		if metadataChanged && !reconciliationMetadataMatches(observed.Metadata, state.Metadata) {
 			return out, incompleteEvidence("consistency", "metadata-changed"+metadataDifference(observed.Metadata, state.Metadata), errors.New("metadata changed after enumeration"))
 		}
 		if e = mailbox.CheckPrecondition(p.account.ID, observed, state); e != nil {
@@ -283,7 +284,7 @@ func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyR
 		if e = mailbox.CheckPrecondition(p.account.ID, expected, state); e != nil {
 			return out, reconciliationBlock("original identity, sender or header conflicts with current evidence; preserve the mirror and request owner review")
 		}
-		if casingChanged {
+		if metadataChanged {
 			out.EnumeratedStates[r.N] = reconciliationObservation(observed)
 		}
 		out.States[r.N] = reconciliationObservation(state)
