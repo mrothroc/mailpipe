@@ -123,3 +123,10 @@ Deleted mail remains recoverable only while the server retains Deleted Items;
 `actions <plan>` identifies recorded moves. Save durable records before cleanup.
 For blank metadata, a full sync can repair rows only when the normal account and
 lifecycle preconditions permit sync. It does not bypass historical attribution.
+
+A rejected sender-address observation can be inspected only through an explicit
+preview-only [private diagnostic](graph-reconciliation.md#private-sender-address-diagnostics).
+This owner-only raw file does not relax sender checks or provide a reconciliation
+proposal. Keep it outside checkouts and database/configuration directories; treat
+its contents as untrusted private data, safeguard or remove it after secure local
+inspection, and never upload it to agents or issue reports.

@@ -104,7 +104,7 @@ func TestReconciliationVerifierFailuresReturnZeroProofAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"account", "unsupported", "resolve-404", "resolve-read", "collector", "review"} {
+	for _, kind := range []string{"account", "unsupported", "resolve-404", "resolve-read", "collector", "diagnostic-unsupported", "review"} {
 		t.Run(kind, func(t *testing.T) {
 			cause := errors.New("invented-read-failure")
 			p := &reconciliationVerifierProvider{account: a}
@@ -121,7 +121,7 @@ func TestReconciliationVerifierFailuresReturnZeroProofAndReport(t *testing.T) {
 			case "collector":
 				p.collectErr = &graphmail.ReconciliationError{Reason: "incomplete evidence", Cause: cause}
 			}
-			v := &reconciliationVerifier{provider: provider, report: store.LegacyReconciliationReceipt{Digest: "previous-proposal"}}
+			v := &reconciliationVerifier{provider: provider, senderDiagnostics: kind == "diagnostic-unsupported", report: store.LegacyReconciliationReceipt{Digest: "previous-proposal"}}
 			proof, err := v.ReconcileLegacy(ctx, a, prep)
 			if err == nil || !reflect.DeepEqual(proof, store.LegacyReconciliation{}) || !reflect.DeepEqual(v.report, store.LegacyReconciliationReceipt{}) {
 				t.Fatalf("failed verifier leaked proof/report: %+v %+v %v", proof, v.report, err)

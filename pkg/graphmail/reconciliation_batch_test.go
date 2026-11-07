@@ -67,14 +67,21 @@ func TestReconciliationBatchCancellationAndPartialFailure(t *testing.T) {
 }
 
 func TestReconciliationRealisticReadOperationCounts(t *testing.T) {
-	a := mailbox.Account{ID: "invented-account", ProviderID: "graph"}
-	tr := &evidenceBenchmarkTransport{n: 10001}
-	p, err := New(tr, a)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proof, err := p.ReconcileLegacyReferences(context.Background(), batchOriginals(tr.n, a))
-	if err != nil || len(proof.States) != 10000 || !proof.Unavailable[10001] || tr.inspections != 10001 || tr.pages != 50 || tr.batches != 501 || tr.calls != 551 {
-		t.Fatalf("enumeration or exact inspections skipped: %v counts=%+v", err, tr)
+	for _, capture := range []bool{false, true} {
+		a := mailbox.Account{ID: "invented-account", ProviderID: "graph"}
+		tr := &evidenceBenchmarkTransport{n: 10001}
+		p, err := New(tr, a)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var proof LegacyEvidence
+		if capture {
+			proof, err = p.ReconcileLegacyReferencesWithSenderAddressDiagnostics(context.Background(), batchOriginals(tr.n, a))
+		} else {
+			proof, err = p.ReconcileLegacyReferences(context.Background(), batchOriginals(tr.n, a))
+		}
+		if err != nil || len(proof.States) != 10000 || !proof.Unavailable[10001] || tr.inspections != 10001 || tr.pages != 50 || tr.batches != 501 || tr.calls != 551 {
+			t.Fatalf("enumeration or exact inspections skipped: %v counts=%+v", err, tr)
+		}
 	}
 }
