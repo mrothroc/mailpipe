@@ -18,7 +18,13 @@ import (
 )
 
 func diagnosticFixture() *graphmail.ReconciliationSenderAddressDiagnostic {
-	return &graphmail.ReconciliationSenderAddressDiagnostic{AccountID: "graph:invented", N: 9007199254740993, ImmutableID: "opaque-invented", EnumeratedSenderAddress: "Sender@Example.org", InspectedSenderAddress: "different@example.org"}
+	d := &graphmail.ReconciliationSenderAddressDiagnostic{AccountID: "graph:invented", N: 9007199254740993, ImmutableID: "opaque-invented", EnumeratedSenderAddress: "Sender@Example.org", InspectedSenderAddress: "different@example.org"}
+	d.EnumeratedOrigin = diagnosticOrigin(d.EnumeratedSenderAddress)
+	d.InspectedOrigin = diagnosticOrigin(d.InspectedSenderAddress)
+	return d
+}
+func diagnosticOrigin(address string) *graphmail.ReconciliationSenderAddressOrigin {
+	return &graphmail.ReconciliationSenderAddressOrigin{From: graphmail.ReconciliationAddressSource{Presence: "present", Address: address}, Sender: graphmail.ReconciliationAddressSource{Presence: "missing"}, SelectedSource: "from", MappedSenderMatchesWire: true, RecipientsMatchWire: true}
 }
 func privateDiagnostic(t *testing.T) (*senderDiagnosticOutput, string) {
 	t.Helper()
@@ -38,6 +44,7 @@ func TestSenderDiagnosticEncoding(t *testing.T) {
 	for _, value := range []string{"", "K@example.org", "\x1b\nhttps://host.example.org/private?token=secret", "<script>\u2028&"} {
 		d := diagnosticFixture()
 		d.EnumeratedSenderAddress = value
+		d.EnumeratedOrigin = diagnosticOrigin(value)
 		raw, e := encodeSenderDiagnostic(d)
 		if e != nil {
 			t.Fatal(e)
@@ -46,12 +53,12 @@ func TestSenderDiagnosticEncoding(t *testing.T) {
 		if e = json.Unmarshal(raw, &decoded); e != nil {
 			t.Fatal(e)
 		}
-		if decoded.Enumerated != value || decoded.N != d.N || decoded.ReconciliationComplete || !decoded.EnumerationComplete || decoded.Format != 1 {
+		if decoded.Enumerated != value || decoded.N != d.N || decoded.ReconciliationComplete || !decoded.EnumerationComplete || decoded.Format != 3 {
 			t.Fatal("lossy raw diagnostic")
 		}
 		var fields map[string]any
 		json.Unmarshal(raw, &fields)
-		if len(fields) != 12 {
+		if len(fields) != 17 {
 			t.Fatalf("unexpected exported fields: %d", len(fields))
 		}
 	}
@@ -63,10 +70,11 @@ func TestSenderDiagnosticEncoding(t *testing.T) {
 		case "raw-limit":
 			d.InspectedSenderAddress = strings.Repeat("a", senderDiagnosticLimit+1)
 		case "escaped-limit":
-			d.InspectedSenderAddress = strings.Repeat("\x00", senderDiagnosticLimit/2)
+			d.InspectedSenderAddress = strings.Repeat("\x00", senderDiagnosticLimit/8)
 		case "number":
 			d.N = 0
 		}
+		d.InspectedOrigin = diagnosticOrigin(d.InspectedSenderAddress)
 		if raw, e := encodeSenderDiagnostic(d); e == nil || raw != nil {
 			t.Fatal("invalid/oversized payload accepted")
 		}
@@ -398,5 +406,47 @@ func TestSenderDiagnosticClosurePreservesFailureClass(t *testing.T) {
 		if strings.Contains(result.Error(), "private-") {
 			t.Fatal("raw resource error rendered")
 		}
+	}
+}
+
+func TestSenderDiagnosticRequiresCompleteOrigin(t *testing.T) {
+	NewRootCommand(Deps{})
+	for _, kind := range []string{"missing-enum", "missing-inspection", "wrong-choice", "unknown-presence", "wrong-value", "mapping-false", "recipients-false", "invalid-unselected"} {
+		t.Run(kind, func(t *testing.T) {
+			payload := diagnosticFixture()
+			switch kind {
+			case "missing-enum":
+				payload.EnumeratedOrigin = nil
+			case "missing-inspection":
+				payload.InspectedOrigin = nil
+			case "wrong-choice":
+				payload.EnumeratedOrigin.SelectedSource = "untrusted-secret\n"
+			case "unknown-presence":
+				payload.InspectedOrigin.From.Presence = "unknown"
+			case "wrong-value":
+				payload.EnumeratedOrigin.From.Address = "wrong@example.org"
+			case "mapping-false":
+				payload.InspectedOrigin.MappedSenderMatchesWire = false
+			case "recipients-false":
+				payload.InspectedOrigin.RecipientsMatchWire = false
+			case "invalid-unselected":
+				payload.InspectedOrigin.Sender = graphmail.ReconciliationAddressSource{Presence: "present", Address: "\xff"}
+			}
+			if raw, e := encodeSenderDiagnostic(payload); e == nil || raw != nil {
+				t.Fatal("incomplete provenance encoded")
+			}
+			d, path := privateDiagnostic(t)
+			var out, stderr bytes.Buffer
+			a := agentio.New("account reconcile", agentio.WithStdout(&out), agentio.WithStderr(&stderr))
+			cause := &graphmail.ReconciliationError{Reason: "incomplete primary-mailbox evidence", Cause: context.Canceled, SenderAddressDiagnostic: payload}
+			result := d.failure(context.Background(), a, cause)
+			a.Fail(result)
+			if agentio.ExitCode(result) != 1 || !errors.Is(result, context.Canceled) || out.Len() != 0 || strings.Contains(stderr.String(), "saved privately") || strings.Contains(stderr.String(), "untrusted-secret") || !strings.Contains(stderr.String(), "incomplete") {
+				t.Fatal("unsupported origin granted output authority")
+			}
+			if _, e := os.Lstat(path); !errors.Is(e, os.ErrNotExist) {
+				t.Fatal("unsupported provenance left raw file")
+			}
+		})
 	}
 }

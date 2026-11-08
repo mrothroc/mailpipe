@@ -64,12 +64,20 @@ A historical Graph mirror can require attribution before sync while strict
 `account bind` refuses a stored live reference that is now unavailable. Use
 `mailpipe account reconcile` in that same private context to preview complete
 read-only evidence and review every disposition and old-to-current membership
-change, accepted address casing pair and sender display-name pair. These are
+change, sender-address disagreement, address casing pair and sender display-name
+pair. These are
 reviewed presentation differences on the same independently verified exact ID,
-not ownership or continuity proof. Only sender names may differ; recipient
+not ownership or continuity proof. Recovery may select an inspection sender
+despite a noncase enumeration disagreement only when both source mappings are
+validated and inspection still passes the original historical sender/header
+checks. Both changed addresses must be nonempty valid UTF-8; this does not equate
+aliases or authorize replacement of historical metadata. Recipient
 names, order and all other metadata stay strict. Address casing keeps its
 existing untrimmed comparison. Both exact observations are retained
-and included in the reviewed proposal digest. Each original immutable ID is
+and included with independently derived flags in the version-6 proposal digest.
+Older pending proposals cannot authorize a new binding; committed version-1
+through version-5 receipts retain offline display and exact stored-confirmation
+routing repair without rewriting history. Each original immutable ID is
 verified independently; matching headers
 on a different ID never replace it or transfer history. With specific owner approval,
 its execute path requires exact account, full-history and reconciliation digests.
@@ -126,7 +134,12 @@ lifecycle preconditions permit sync. It does not bypass historical attribution.
 
 A rejected sender-address observation can be inspected only through an explicit
 preview-only [private diagnostic](graph-reconciliation.md#private-sender-address-diagnostics).
-This owner-only raw file does not relax sender checks or provide a reconciliation
-proposal. Keep it outside checkouts and database/configuration directories; treat
+Its format-3 selected-field origins distinguish Graph From/Sender selection from
+the mapped observations without exporting recipients or names. Unknown provenance
+fails closed. This owner-only raw file does not relax sender checks or provide a
+reconciliation proposal. An explicit original-number selector can observe one
+pair independently of earlier admission failures, without evaluating historical
+identity or generating proof. It still reads all originals and always exits
+runtime 1 with empty stdout, even when saving succeeds. Keep it outside checkouts and database/configuration directories; treat
 its contents as untrusted private data, safeguard or remove it after secure local
 inspection, and never upload it to agents or issue reports.

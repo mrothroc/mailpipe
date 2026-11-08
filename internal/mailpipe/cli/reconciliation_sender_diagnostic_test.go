@@ -3,12 +3,13 @@ package cli_test
 import (
 	"context"
 	"encoding/json"
-	"github.com/mrothroc/mailpipe/pkg/graphmail"
-	"github.com/mrothroc/mailpipe/pkg/store"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mrothroc/mailpipe/pkg/graphmail"
+	"github.com/mrothroc/mailpipe/pkg/store"
 )
 
 func TestReconcileSenderAddressDiagnosticCommand(t *testing.T) {
@@ -102,7 +103,7 @@ func TestReconcileSenderDiagnosticControls(t *testing.T) {
 			}
 			code, out, stderr := e.run(args...)
 			if kind == "success" {
-				if code != 0 || !strings.Contains(out, `"version":5`) {
+				if code != 0 || !strings.Contains(out, `"version":6`) {
 					t.Fatalf("diagnostic option changed successful preview %d %s", code, stderr)
 				}
 				first := reconciliationRows(t, out)[0]["reconciliation_digest"]
@@ -166,5 +167,12 @@ func TestReconcileSenderDiagnosticRejectsCommittedReceiptOffline(t *testing.T) {
 	}
 	if _, err := os.Lstat(path); !os.IsNotExist(err) {
 		t.Fatal("offline receipt created raw diagnostic")
+	}
+	code, out, stderr = e.run("account", "reconcile", "--json", "--sender-address-diagnostic-out", path, "--sender-address-diagnostic-n", "1")
+	if code != 2 || out != "" || !strings.Contains(stderr, "fresh unbound preview") {
+		t.Fatalf("selected offline diagnostic not refused before auth: %d %s", code, stderr)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatal("selected offline receipt created raw diagnostic")
 	}
 }

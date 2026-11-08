@@ -87,7 +87,7 @@ func TestReconcileSenderNameReview(t *testing.T) {
 			}
 			rows := reconciliationRows(t, out)
 			item := rows[1]
-			if item["sender_name_changed"] != true || item["sender_casing_changed"] != combined || item["recipient_casing_changed"] != combined || rows[0]["version"] != float64(5) {
+			if item["sender_name_changed"] != true || item["sender_casing_changed"] != combined || item["recipient_casing_changed"] != combined || rows[0]["version"] != float64(6) {
 				t.Fatal("presentation flags/version not derived independently")
 			}
 			if g.pages != 1 || g.batches != 1 || len(g.moved) != 0 {
@@ -131,7 +131,7 @@ func TestReconcileSenderNameReview(t *testing.T) {
 }
 
 func TestReconcileSenderNameDoesNotMaskFailure(t *testing.T) {
-	for _, kind := range []string{"recipient-name", "address-trim", "subject", "membership", "revision", "header", "id"} {
+	for _, kind := range []string{"recipient-name", "address-content", "subject", "membership", "revision", "header", "id"} {
 		t.Run(kind, func(t *testing.T) {
 			e := newEnv(t)
 			seedConflictHistory(t, e, []string{"original"}, "<original@example.org>", "sender@example.org")
@@ -142,8 +142,8 @@ func TestReconcileSenderNameDoesNotMaskFailure(t *testing.T) {
 				switch kind {
 				case "recipient-name":
 					m["toRecipients"].([]any)[0].(map[string]any)["emailAddress"].(map[string]any)["name"] = "reader"
-				case "address-trim":
-					m["from"].(map[string]any)["emailAddress"].(map[string]any)["address"] = " sender@example.org "
+				case "address-content":
+					m["from"].(map[string]any)["emailAddress"].(map[string]any)["address"] = "sender+tag@example.org"
 				case "subject":
 					m["subject"] = "Changed"
 				case "membership":

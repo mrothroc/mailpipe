@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/mrothroc/agentio"
@@ -25,8 +26,13 @@ type senderAddressEvidenceProvider interface {
 	ReconcileLegacyReferencesWithSenderAddressDiagnostics(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error)
 }
 
+type senderAddressObserver interface {
+	ObserveLegacySenderAddress(context.Context, []graphmail.LegacyReference, int64) (graphmail.ReconciliationSenderAddressDiagnostic, error)
+}
+
 type reconciliationVerifier struct {
 	senderDiagnostics bool
+	selectedOriginal  int64
 	provider          mailbox.Provider
 	confirmed         bool
 	report            store.LegacyReconciliationReceipt
@@ -45,10 +51,23 @@ func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.
 		return proof, &mailbox.AccountMismatchError{Operation: "legacy reconciliation", Expected: a.ID, Actual: v.provider.Account().ID}
 	}
 	collector, ok := v.provider.(legacyEvidenceProvider)
-	if !ok {
+	if !ok && v.selectedOriginal == 0 {
 		return proof, &mailbox.UnsupportedError{Operation: "Graph legacy reconciliation evidence"}
 	}
-	if v.senderDiagnostics {
+	if v.selectedOriginal != 0 {
+		if _, ok := v.provider.(senderAddressObserver); !ok {
+			return proof, &graphmail.ReconciliationError{Reason: "selected-original sender-address diagnostics unsupported by this provider"}
+		}
+		matches := 0
+		for _, m := range p.Live {
+			if m.N == v.selectedOriginal {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return proof, &graphmail.ReconciliationError{Reason: "requested original is not a unique live historical reference"}
+		}
+	} else if v.senderDiagnostics {
 		if _, ok := v.provider.(senderAddressEvidenceProvider); !ok {
 			return proof, &graphmail.ReconciliationError{Reason: "sender-address diagnostics unsupported by this provider"}
 		}
@@ -72,7 +91,19 @@ func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.
 	}
 	var evidence graphmail.LegacyEvidence
 	var e error
-	if v.senderDiagnostics {
+	if v.selectedOriginal != 0 {
+		d, e := v.provider.(senderAddressObserver).ObserveLegacySenderAddress(ctx, refs, v.selectedOriginal)
+		if e != nil {
+			return proof, &graphmail.ReconciliationError{Reason: "selected-original observation could not be acquired; no reconciliation proposal was generated", Cause: e}
+		}
+		for _, r := range refs {
+			if r.N == v.selectedOriginal && d.RequestedOriginal && d.AccountID == a.ID && d.N == r.N && d.ImmutableID == r.Ref.MessageID && d.EnumeratedOrigin.MatchesMappedSender(d.EnumeratedSenderAddress) && d.InspectedOrigin.MatchesMappedSender(d.InspectedSenderAddress) {
+				// No store review or admitted State is produced on this path.
+				return proof, &graphmail.ReconciliationError{Reason: "selected-original observation only; admission and historical identity were not evaluated", SenderAddressDiagnostic: &d}
+			}
+		}
+		return proof, &graphmail.ReconciliationError{Reason: "selected-original observation association could not be verified"}
+	} else if v.senderDiagnostics {
 		diagnosticCollector := v.provider.(senderAddressEvidenceProvider)
 		evidence, e = diagnosticCollector.ReconcileLegacyReferencesWithSenderAddressDiagnostics(ctx, refs)
 	} else {
@@ -83,6 +114,7 @@ func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.
 	}
 	proof.Verification.States = evidence.States
 	proof.EnumeratedStates = evidence.EnumeratedStates
+	proof.SenderSourceIntegrity = evidence.SenderSourceIntegrity
 	for n, unavailable := range evidence.Unavailable {
 		if unavailable {
 			proof.Unavailable[n] = store.LegacyUnavailable
@@ -102,6 +134,9 @@ func reconciliationError(e error) error {
 	}
 	var evidence *graphmail.ReconciliationError
 	if errors.As(e, &evidence) {
+		if evidence.SenderAddressDiagnostic != nil && evidence.SenderAddressDiagnostic.RequestedOriginal {
+			return agentio.NewError("Graph reconciliation: selected-original diagnostic only; admission and historical identity were not evaluated", "review the private diagnostic; no reconciliation proposal was generated")
+		}
 		if evidence.Structural {
 			return agentio.NewStaleError(evidence.Error(), "preserve the mirror and request owner review of the original identity evidence")
 		}
@@ -241,11 +276,11 @@ func reconciliationOutput(agent *agentio.AgentIO, status string, r store.LegacyR
 			"coverage": r.Coverage, "started": r.Started.Format(time.RFC3339Nano), "finished": r.Finished.Format(time.RFC3339Nano), "pages": r.Pages, "observed": r.Observed,
 			"n": i.N, "disposition": i.Disposition, "original_id": i.OriginalID, "reason": i.Reason, "original_removed": i.Removed,
 			"original_folder": i.OriginalFolder, "original_memberships": nested["original_memberships"], "membership_changed": i.MembershipChanged, "state": nested["state"],
-			"enumerated_state": nested["enumerated_state"], "recipient_casing_changed": i.RecipientCasingChanged, "sender_casing_changed": i.SenderCasingChanged, "sender_name_changed": i.SenderNameChanged,
+			"enumerated_state": nested["enumerated_state"], "recipient_casing_changed": i.RecipientCasingChanged, "sender_casing_changed": i.SenderCasingChanged, "sender_name_changed": i.SenderNameChanged, "sender_address_disagrees": i.SenderAddressDisagrees,
 			"history_confirmed": r.HistoricalAttributionConfirmed, "backup": r.Backup, "backup_digest": r.BackupDigest,
 		})
 	}
-	header := []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "state", "recipient_casing_changed", "sender_casing_changed", "sender_name_changed", "enumerated_state", "verified", "unavailable", "historical"}
+	header := []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "state", "recipient_casing_changed", "sender_casing_changed", "sender_name_changed", "sender_address_disagrees", "enumerated_state", "verified", "unavailable", "historical"}
 	return agentio.Tabled(agent, header, rows, func(row map[string]any) []string {
 		values := make([]string, len(header))
 		for j, key := range header {
@@ -270,6 +305,15 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 		confirmD, _ := cmd.Flags().GetString("confirm-history")
 		confirmR, _ := cmd.Flags().GetString("confirm-reconciliation")
 		diagnosticPath, _ := cmd.Flags().GetString("sender-address-diagnostic-out")
+		selectedText, _ := cmd.Flags().GetString("sender-address-diagnostic-n")
+		var selectedN int64
+		if cmd.Flags().Changed("sender-address-diagnostic-n") {
+			var parseErr error
+			selectedN, parseErr = strconv.ParseInt(selectedText, 10, 64)
+			if parseErr != nil || selectedN <= 0 || strconv.FormatInt(selectedN, 10) != selectedText || !cmd.Flags().Changed("sender-address-diagnostic-out") {
+				return agentio.NewUsageError("sender-address diagnostic selection requires a canonical positive original number and an output destination", "mailpipe account reconcile --help")
+			}
+		}
 		var diagnostic *senderDiagnosticOutput
 		if cmd.Flags().Changed("sender-address-diagnostic-out") {
 			if cmd.Flags().Changed("execute") || cmd.Flags().Changed("confirm-account") || cmd.Flags().Changed("confirm-history") || cmd.Flags().Changed("confirm-reconciliation") {
@@ -343,7 +387,7 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		verifier := &reconciliationVerifier{provider: p, senderDiagnostics: diagnostic != nil, confirmed: execute && confirmD == prep.Digest()}
+		verifier := &reconciliationVerifier{provider: p, senderDiagnostics: diagnostic != nil, selectedOriginal: selectedN, confirmed: execute && confirmD == prep.Digest()}
 		if execute && !verifier.confirmed {
 			return agentio.NewUsageError("history changed or was not reviewed", "mailpipe account reconcile")
 		}
@@ -376,11 +420,12 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 					return senderDiagnosticClosureFailure(nil, err)
 				}
 			}
-			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition, old-to-current membership change, address casing pair and sender display-name pair, and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
+			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition, old-to-current membership change, sender-address disagreement, address casing pair and sender display-name pair, and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
 		}
 		return reconciliationOutput(agent, status, verifier.report)
 	})
-	cmd.Flags().String("sender-address-diagnostic-out", "", "write one blocked sender-address observation pair to a new owner-private file (preview only)")
+	cmd.Flags().String("sender-address-diagnostic-out", "", "write a sender-address observation to a new owner-private file (preview only; no proof)")
+	cmd.Flags().String("sender-address-diagnostic-n", "", "select one original observation, without admission or historical validation; requires diagnostic-out; always exits runtime 1, even when saved")
 	cmd.Flags().Bool("execute", false, "bind only the freshly regenerated owner-reviewed reconciliation")
 	cmd.Flags().String("confirm-account", "", "exact reviewed immutable account")
 	cmd.Flags().String("confirm-history", "", "exact reviewed complete historical inventory digest")

@@ -60,7 +60,7 @@ func TestReconcileSenderCasingReview(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("sender preview: %d %s", code, stderr)
 			}
-			if !strings.Contains(out, `"sender_casing_changed":true`) || !strings.Contains(out, `"version":5`) || !strings.Contains(out, "SENDER@Example.org") || !strings.Contains(out, "sender@example.org") {
+			if !strings.Contains(out, `"sender_casing_changed":true`) || !strings.Contains(out, `"version":6`) || !strings.Contains(out, "SENDER@Example.org") || !strings.Contains(out, "sender@example.org") {
 				t.Fatal("missing raw sender review")
 			}
 			rows := reconciliationRows(t, out)
@@ -112,7 +112,12 @@ func TestReconcileSenderMismatchSafeFailure(t *testing.T) {
 			e := newEnv(t)
 			seedConflictHistory(t, e, []string{"original"}, "<original@example.org>", "sender@example.org")
 			e.graph.server = map[string]serverMsg{"original": {"inbox", "<original@example.org>", "sender@example.org"}}
-			g := &senderCasingGraph{casingGraph: &casingGraph{fakeGraph: e.graph, listed: "reader@example.org", inspected: "reader@example.org"}, sender: tc.sender}
+			g := &senderNameGraph{senderCasingGraph: &senderCasingGraph{casingGraph: &casingGraph{fakeGraph: e.graph, listed: "reader@example.org", inspected: "reader@example.org"}, sender: tc.sender}}
+			fields := "fields=sender-address;"
+			if tc.label == "whitespace" || tc.label == "joint" {
+				g.edit = func(m map[string]any) { m["subject"] = "Changed invented subject" }
+				fields = "fields=sender-address,subject;"
+			}
 			subject, err := e.auth.Subject(context.Background())
 			if err != nil {
 				t.Fatal(err)
@@ -122,7 +127,7 @@ func TestReconcileSenderMismatchSafeFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			code, out, stderr := e.run("account", "reconcile", "--json")
-			if code != agentio.ExitRuntime || out != "" || !strings.Contains(stderr, "fields=sender-address;") || !strings.Contains(stderr, "sender-address="+tc.relation+";") {
+			if code != agentio.ExitRuntime || out != "" || !strings.Contains(stderr, fields) || !strings.Contains(stderr, "sender-address="+tc.relation+";") {
 				t.Fatalf("missing bounded failed comparison: %d %s", code, stderr)
 			}
 			for _, value := range []string{tc.sender, "invented-sender-secret", "host.example.org", "original@example.org", e.db, "--confirm-reconciliation", "\x1b"} {

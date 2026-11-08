@@ -30,10 +30,15 @@ coverage and observation times, counts, and **every message disposition**:
   `original_memberships`, the current memberships in `state`, and
   `membership_changed`. A collection change is explicit old-to-current evidence,
   not an identity replacement; every change requires owner review. If
-  `sender_casing_changed`, `recipient_casing_changed` or `sender_name_changed`
+  `sender_address_disagrees`, `sender_casing_changed`, `recipient_casing_changed`
+  or `sender_name_changed`
   is true, compare the exact `enumerated_state` with inspection `state`. Sender
   display names and sender/indexed-recipient address casing are separate reviewed
-  differences. Recipient names, order, duplicates and other metadata stay strict.
+  differences. A noncase sender disagreement selects inspection only when its
+  sender/header still pass the original history checks and both source mappings
+  are validated. It does not declare aliases equivalent or establish ownership.
+  Noncase disagreement and case-only flags are mutually exclusive. Recipient
+  names, order, duplicates and other metadata stay strict.
   Review the complete pair, including private overflow output.
 - `unavailable`: a completed enumeration did not observe this exact ID, and a
   subsequent exact lookup returned Graph's recognized item-not-found response.
@@ -49,7 +54,8 @@ incomplete run produces no executable proposal digest.
 
 Only if the owner knows that **all** history belongs to the displayed account,
 including every unavailable row, and approves every displayed old-to-current
-membership change, address casing pair and sender display-name pair, obtain
+membership change, sender-address disagreement, address casing pair and sender
+display-name pair, obtain
 specific approval for local attribution:
 
 ```text
@@ -131,15 +137,65 @@ existing files, links and other objects are refused. The command does not create
 or repair directories. The flag cannot accompany `--execute` or any confirmation
 flag, and cannot display a committed receipt or repair routing.
 
-Only a rejected enumeration-versus-inspection sender-address pair for the same
-requested immutable reference produces the artifact. Other failures, including a
-historical original-sender mismatch, do not. No extra mailbox requests are made.
-The format-1 JSON contains the selected account, original local number, requested
-immutable ID and both exact decoded sender-address strings. It marks enumeration
-complete but reconciliation incomplete. It contains no proposal or approval.
-The inspection has not completed all identity checks or verified all originals;
+Without a selector, only the first admission failure can produce an artifact,
+and only when it contains a rejected enumeration-versus-inspection sender-address
+pair. An earlier unrelated failure can prevent that diagnostic. Other failures,
+including a historical original-sender mismatch, do not produce this artifact.
+
+To inspect one intended original independently of admission failures, add
+`--sender-address-diagnostic-n <positive-original-n>` to the command above. Use
+the exact local number from the current unbound history, in canonical positive
+decimal form. Unknown, removed or ambiguous originals are refused. This mode
+completes the same enumeration followed by ordered inspection of **all** original
+references; it adds no requests and does not perform a selected-only lookup.
+Read/authentication failures, incomplete responses, unsupported provenance or an
+unavailable selected reference prevent the artifact. A recognized exact-item
+not-found for a different, unobserved original is only a read result here, never
+an absence disposition or historical proof.
+
+Selected mode does not evaluate reconciliation admission or historical identity.
+It can save equal sender addresses or a pair with unrelated metadata differences;
+neither grants acceptance. It always exits **runtime 1**, even when the private
+file is saved successfully, with empty stdout and no proposal. Review the private
+diagnostic rather than blindly retrying or interpreting the failure as a request
+to execute reconciliation. Default preview admission remains strict.
+
+The format-3 JSON contains the selected account, original local number, requested
+immutable ID and both exact decoded mapped sender-address strings. Each
+`enumerated_origin` / `inspected_origin` also retains the decoded Graph `from`
+and `sender` address strings with `missing`, `null` or `present` field presence,
+the fixed `selected_source` (`from`, `sender` or `none`), and
+`mapped_sender_matches_wire` / `recipients_match_wire` integrity results.
+These views come from the selected fields in the actual response, independently
+checked against the adapter state at decoding. The chosen sender address is
+checked again at collector and writer handoffs. To/Cc values and all names remain excluded.
+From takes precedence when present, even with an empty address; Sender is only a
+missing/null From fallback. A source field is not an RFC header or account proof.
+
+The artifact marks enumeration complete but reconciliation incomplete, with no
+historical identity validation. Its fixed scope distinguishes
+`first_failure_sender_disagreement` (status `blocked`) from
+`requested_original_observation` (status `diagnostic_only`). The latter explicitly
+sets `describes_first_failure=false`, `admission_evaluated=false` and
+`historical_identity_validated=false`. It does not claim to describe the first
+failure. Existing format-1/2 files are not imported or overwritten. No format
+contains a proposal or approval. In first-failure preview mode without a selector,
+origin failures can display fixed `unsupported-provenance`, `provenance-mismatch`
+or `provenance-state-changed` labels, not a guessed source or accepted sender.
+Selected mode instead wraps acquisition failures in a fixed message that the
+observation could not be acquired and no reconciliation proposal was generated.
+The underlying cause identity is preserved, but its inner labels need not appear
+in CLI output. Selected mode exits runtime 1 with empty stdout and no proposal;
+no raw details are printed. Only the explicit option collects these extra origins;
+normal inspection and acceptance stay unchanged.
+Acquisition has not established historical identity or admitted all originals;
 these observations are untrusted diagnostic data, not ownership evidence.
 
+Retained original-message provenance has a separate 16 MiB aggregate raw-field
+budget; exhaustion invalidates the pass (`provenance-limit` in first-failure
+preview mode) without omitting records or producing a proposal. It adds no mailbox
+requests, does not retain every enumerated message, and is not a constant-memory
+guarantee. Selected mode retains extra origins only for the requested original.
 The private file is exclusively created with mode `0600`, bounded to 1 MiB and
 verified in full. No values are shortened, normalized or redacted in this
 explicitly raw artifact. Invalid encoding, excessive size, write/readback errors
@@ -179,9 +235,10 @@ A found original must match its exact immutable reference, header and sender.
 A different collection is accepted only as explicit reviewed state in this
 reconciliation path. Enumeration and inspection must agree on current metadata,
 membership and any recorded revision, except reviewed same-ID sender display-name
-differences and sender/recipient address casing. The name exception preserves both exact decoded observations;
+differences, sender/recipient address casing, and the directional sender rule
+below. The name exception preserves both exact decoded observations;
 changed names must be valid UTF-8. It does not normalize names or assert that two
-display names identify the same person or owner. The address rule is unchanged:
+display names identify the same person or owner. The casing rule is unchanged:
 it uses Unicode simple case folding (`strings.EqualFold`)
 without trimming, sorting, alias expansion or Unicode normalization. It does
 not establish RFC mailbox equivalence. Original spellings remain in both states;
@@ -189,15 +246,29 @@ no address is globally lowercased. Strict `account bind`, ordinary sync and acti
 preconditions retain their existing comparisons. An unavailable historical
 source-folder mapping remains blocked; no name or collection is guessed.
 
-New proposals and receipts use JSON version 5 and a separate digest domain.
+For the same authenticated account and exact immutable reference, recovery may
+select inspection's sender address despite a noncase enumeration disagreement
+only when inspection still passes the ORIGINAL historical sender/header checks.
+Both observations must have independently validated source-to-mapping integrity;
+false or unknown integrity blocks this exception. Changed addresses must be
+nonempty valid UTF-8. The report retains both complete raw states and derives
+`sender_address_disagrees` separately from case-only `sender_casing_changed`.
+This is directional observation selection, not trimming, alias expansion, RFC
+equivalence or permission to replace original history. All unrelated metadata,
+recipient names/order/shape, current memberships and recorded revisions remain
+strict. Default collection retains only integrity stamps, not raw source traces.
+
+New proposals and receipts use JSON version 6 and digest domain
+`mailpipe-legacy-reconciliation-v6`.
 The proposal covers original and current membership evidence for every live
 original, plus both exact observations and derived flags for accepted
-address-casing or sender-name differences, alongside the account, complete source
+sender disagreements, address-casing or sender-name differences, alongside the account, complete source
 digest, folder mappings and all dispositions.
 Changing either raw observation changes the proposal digest even when the
-relationship remains permitted. A version-1 through version-4 pending proposal
-cannot execute a new binding; obtain a fresh preview. Committed version-1 through
-version-4 receipts remain readable offline and retain their exact-confirmation routing-repair behavior. They are not rewritten,
+relationship remains permitted. A version-1 through version-5 pending proposal
+cannot execute a new binding, even without differences; obtain a fresh preview.
+Committed version-1 through version-5 receipts remain readable offline and retain
+their exact-confirmation routing-repair behavior. They are not rewritten,
 reinterpreted as new evidence or replayed through binding. See the
 [exact-ID reconciliation decision](adr/0010-exact-id-reconciliation.md).
 

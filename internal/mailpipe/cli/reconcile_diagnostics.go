@@ -19,32 +19,52 @@ const senderDiagnosticLimit = 1 << 20
 // This is deliberately separate from proposals and automatic output overflow.
 // Every variable string is private, untrusted data, not a rendering instruction.
 type senderDiagnosticDocument struct {
-	Format                 int    `json:"format"`
-	Status                 string `json:"status"`
-	Kind                   string `json:"diagnostic_kind"`
-	Scope                  string `json:"diagnostic_scope"`
-	Provider               string `json:"provider"`
-	EnumerationComplete    bool   `json:"enumeration_complete"`
-	ReconciliationComplete bool   `json:"reconciliation_complete"`
-	Account                string `json:"account"`
-	N                      int64  `json:"n"`
-	ImmutableID            string `json:"requested_immutable_id"`
-	Enumerated             string `json:"enumerated_sender_address"`
-	Inspected              string `json:"inspected_sender_address"`
+	Format                 int                                          `json:"format"`
+	Status                 string                                       `json:"status"`
+	Kind                   string                                       `json:"diagnostic_kind"`
+	Scope                  string                                       `json:"diagnostic_scope"`
+	Provider               string                                       `json:"provider"`
+	EnumerationComplete    bool                                         `json:"enumeration_complete"`
+	ReconciliationComplete bool                                         `json:"reconciliation_complete"`
+	DescribesFirstFailure  bool                                         `json:"describes_first_failure"`
+	AdmissionEvaluated     bool                                         `json:"admission_evaluated"`
+	HistoricalValidated    bool                                         `json:"historical_identity_validated"`
+	Account                string                                       `json:"account"`
+	N                      int64                                        `json:"n"`
+	ImmutableID            string                                       `json:"requested_immutable_id"`
+	Enumerated             string                                       `json:"enumerated_sender_address"`
+	Inspected              string                                       `json:"inspected_sender_address"`
+	EnumeratedOrigin       *graphmail.ReconciliationSenderAddressOrigin `json:"enumerated_origin"`
+	InspectedOrigin        *graphmail.ReconciliationSenderAddressOrigin `json:"inspected_origin"`
 }
 
 func encodeSenderDiagnostic(d *graphmail.ReconciliationSenderAddressDiagnostic) ([]byte, error) {
 	if d == nil || d.N <= 0 {
 		return nil, errors.New("invalid diagnostic")
 	}
+	if d.EnumeratedOrigin == nil || d.InspectedOrigin == nil {
+		return nil, errors.New("diagnostic provenance required")
+	}
+	for _, pair := range []struct {
+		origin *graphmail.ReconciliationSenderAddressOrigin
+		mapped string
+	}{{d.EnumeratedOrigin, d.EnumeratedSenderAddress}, {d.InspectedOrigin, d.InspectedSenderAddress}} {
+		if !pair.origin.MatchesMappedSender(pair.mapped) {
+			return nil, errors.New("diagnostic provenance disagrees")
+		}
+	}
 	size := 0
-	for _, s := range []string{string(d.AccountID), string(d.ImmutableID), d.EnumeratedSenderAddress, d.InspectedSenderAddress} {
+	for _, s := range []string{string(d.AccountID), string(d.ImmutableID), d.EnumeratedSenderAddress, d.InspectedSenderAddress, d.EnumeratedOrigin.From.Address, d.EnumeratedOrigin.Sender.Address, d.InspectedOrigin.From.Address, d.InspectedOrigin.Sender.Address} {
 		if !utf8.ValidString(s) || len(s) > senderDiagnosticLimit-size {
 			return nil, errors.New("diagnostic exceeds encoding boundary")
 		}
 		size += len(s)
 	}
-	doc := senderDiagnosticDocument{Format: 1, Status: "blocked", Kind: "sender_address_disagreement", Scope: "incomplete_observation_pair", Provider: "graph", EnumerationComplete: true, ReconciliationComplete: false, Account: string(d.AccountID), N: d.N, ImmutableID: string(d.ImmutableID), Enumerated: d.EnumeratedSenderAddress, Inspected: d.InspectedSenderAddress}
+	doc := senderDiagnosticDocument{Format: 3, Status: "blocked", Kind: "sender_address_disagreement", Scope: "first_failure_sender_disagreement", Provider: "graph", EnumerationComplete: true, DescribesFirstFailure: true, AdmissionEvaluated: true, Account: string(d.AccountID), N: d.N, ImmutableID: string(d.ImmutableID), Enumerated: d.EnumeratedSenderAddress, Inspected: d.InspectedSenderAddress, EnumeratedOrigin: d.EnumeratedOrigin, InspectedOrigin: d.InspectedOrigin}
+	if d.RequestedOriginal {
+		doc.Status, doc.Kind, doc.Scope = "diagnostic_only", "sender_address_observation", "requested_original_observation"
+		doc.DescribesFirstFailure, doc.AdmissionEvaluated = false, false
+	}
 	raw, e := json.Marshal(doc)
 	if e != nil {
 		return nil, e

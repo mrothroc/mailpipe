@@ -28,8 +28,8 @@ func TestReconciliationSenderPairReview(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sender pair rejected: %v", err)
 			}
-			if r.Version != 5 {
-				t.Fatal("new proposal must use v5")
+			if r.Version != 6 {
+				t.Fatal("new proposal must use v6")
 			}
 			raw, _ := json.Marshal(r.Items[0])
 			var item struct {

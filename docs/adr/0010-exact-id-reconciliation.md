@@ -67,6 +67,22 @@ history using the exact account, history and reconciliation confirmations.
 Execute regenerates evidence under exclusive lifecycle ownership; changed
 evidence requires a fresh preview and review.
 
+Version-6 recovery may select the exact inspection sender when it still passes
+the original historical sender/header checks for the same authenticated account
+and immutable reference. Both decode seams must independently validate the raw
+From/Sender choice and To-then-Cc mapping against the mapped state. Recovery
+retains only per-reference validity stamps by default; raw source traces require
+the explicit private diagnostic. False or unknown provenance cannot admit this
+new exception. Existing exact, casing and sender-name behavior is preserved.
+Changed noncase addresses must be nonempty valid UTF-8. This is directional
+observation selection, not alias equivalence, normalization or current-sender
+authority over original history. Only enumeration's sender address is excluded
+on value copies for this reviewed comparison; recipient names/order/shape, other
+metadata, exact identity/header, membership and recorded revision remain strict.
+Both complete raw states and the independently derived `sender_address_disagrees`
+flag are digest-bound. That flag and case-only `sender_casing_changed` are mutually
+exclusive; sender-name and recipient-casing flags remain independent.
+
 Strict binding and generic message/action comparators retain membership equality.
 Existing challenge, cardinality, anchor, digest, verified backup, lifecycle and
 transaction guards remain. Binding preserves all original columns, local numbers,
@@ -77,11 +93,11 @@ another ID retains or receives a separate number and no copied provenance.
 Newly observed nonhistorical IDs are not published during attribution. Historical
 pending plans remain readable and cannot acquire execution preconditions.
 
-Receipt JSON evolves within the existing schema. New proposals use version 5
-and digest domain `mailpipe-legacy-reconciliation-v5`, even without metadata
-differences. Pending version-1 through version-4 confirmations cannot authorize
+Receipt JSON evolves within the existing schema. New proposals use version 6
+and digest domain `mailpipe-legacy-reconciliation-v6`, even without metadata
+differences. Pending version-1 through version-5 confirmations cannot authorize
 new binding.
-Committed version-1 through version-4 receipts
+Committed version-1 through version-5 receipts
 remain offline audit records and support same-account routing repair with their
 exact stored confirmations. They are not rewritten or replayed as new binding
 evidence.
@@ -110,7 +126,20 @@ An explicit preview-only sender-address diagnostic can retain one rejected
 same-reference enumeration/inspection pair in an owner-only, bounded private
 file. Default collection retains no new raw error payload, and ordinary errors
 remain value-free. This optional observation contains no proof or proposal;
-strict acceptance, v5 receipts, digests and all attribution guards are unchanged.
+it cannot grant admission or change receipt/digest semantics or attribution guards.
+The private format independently checks the selected response's From/Sender choice and
+To-then-Cc mapping, retaining only raw From/Sender addresses and fixed integrity
+results in the explicit private artifact. Missing/null and present-empty From
+are distinct. Unknown or ambiguous provenance fails rather than validating an
+application mapping defect. The ordinary public inspection path has no observer;
+the optional private recovery observer adds no transport, auth or requests.
+An explicit original-number selector shares complete enumeration and ordered
+inspection of all originals with normal reconciliation, but returns only a scalar
+observation, never admitted evidence. It is independent of admission's first-error
+loop. Format 3 distinguishes this requested, unvalidated observation from a
+first-failure sender disagreement. Equal addresses can be reported; unrelated
+metadata failures are not waived. Selected mode always exits runtime 1 with empty
+stdout, even after saving. It never reviews a proposal or validates history.
 It cannot accompany execution/confirmation or committed receipt use. Exclusive
 rooted creation, privacy/identity checks and complete write/readback/closure
 precede any saved hint. Uncertain output remains failed and non-authoritative.

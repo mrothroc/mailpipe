@@ -28,12 +28,15 @@ type LegacyReference struct {
 type LegacyEvidence struct {
 	States map[int64]mailbox.State
 	// EnumeratedStates retains the exact first observation only for accepted
-	// address casing or sender-name differences. States retains the exact
-	// inspection result.
-	EnumeratedStates  map[int64]mailbox.State
-	Unavailable       map[int64]bool
-	Started, Finished time.Time
-	Pages, Observed   int
+	// address casing, sender-name or noncase sender-address differences. States
+	// retains the exact inspection result.
+	EnumeratedStates map[int64]mailbox.State
+	// SenderSourceIntegrity is present only for an admitted noncase sender pair.
+	// Both decode seams validated source-to-mapping integrity for this exact ref.
+	SenderSourceIntegrity map[int64]bool
+	Unavailable           map[int64]bool
+	Started, Finished     time.Time
+	Pages, Observed       int
 }
 
 // ReconciliationError distinguishes an ownership/identity block from incomplete
@@ -50,11 +53,16 @@ type ReconciliationError struct {
 // ReconciliationSenderAddressDiagnostic is an incomplete observation pair, never
 // identity proof or reconciliation evidence. Default collection does not retain it.
 type ReconciliationSenderAddressDiagnostic struct {
+	// RequestedOriginal distinguishes a selected, unvalidated observation from
+	// a sender disagreement attached to the first admission failure.
+	RequestedOriginal       bool
 	AccountID               mailbox.AccountID
 	N                       int64
 	ImmutableID             mailbox.MessageID
 	EnumeratedSenderAddress string
 	InspectedSenderAddress  string
+	EnumeratedOrigin        *ReconciliationSenderAddressOrigin
+	InspectedOrigin         *ReconciliationSenderAddressOrigin
 }
 
 // ReconciliationDiagnosticField is display data, never an identity reference.
@@ -173,14 +181,20 @@ func (p *Provider) ReconcileLegacyReferencesWithSenderAddressDiagnostics(ctx con
 func (p *Provider) reconcileLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int) (LegacyEvidence, error) {
 	return p.collectLegacyReferences(ctx, refs, messageLimit, pageLimit, false)
 }
-func (p *Provider) collectLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int, capture bool) (out LegacyEvidence, err error) {
-	out = LegacyEvidence{States: map[int64]mailbox.State{}, EnumeratedStates: map[int64]mailbox.State{}, Unavailable: map[int64]bool{}, Started: time.Now().UTC()}
-	// Errors never return a partial evidence capability.
-	defer func() {
-		if err != nil {
-			out = LegacyEvidence{}
-		}
-	}()
+
+// legacyAcquisition contains reads, not admitted reconciliation evidence.
+type legacyAcquisition struct {
+	Started                                 time.Time
+	Pages, Observed                         int
+	listed                                  map[string]mailbox.State
+	states                                  []mailbox.State
+	failures                                []error
+	enumeratedOrigins, inspectedOrigins     map[string]ReconciliationSenderAddressOrigin
+	enumeratedIntegrity, inspectedIntegrity map[string]bool
+}
+
+func (p *Provider) acquireLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int, capture bool, selectedN int64) (out legacyAcquisition, err error) {
+	out.Started = time.Now().UTC()
 	targets := map[string]LegacyReference{}
 	numbers := map[int64]bool{}
 	for _, r := range refs {
@@ -194,9 +208,21 @@ func (p *Provider) collectLegacyReferences(ctx context.Context, refs []LegacyRef
 		targets[id] = r
 		numbers[r.N] = true
 	}
+	if selectedN != 0 && !numbers[selectedN] {
+		return out, reconciliationBlock("requested original is not a live historical reference")
+	}
 	seen := map[string]bool{}
 	links := map[string]bool{}
 	listed := map[string]mailbox.State{}
+	var enumeratedOrigins, inspectedOrigins map[string]ReconciliationSenderAddressOrigin
+	var originBudget reconciliationOriginBudget
+	enumeratedIntegrity, inspectedIntegrity := map[string]bool{}, map[string]bool{}
+	if capture {
+		enumeratedOrigins = map[string]ReconciliationSenderAddressOrigin{}
+		inspectedOrigins = map[string]ReconciliationSenderAddressOrigin{}
+		originBudget.limit = reconciliationOriginLimit
+	}
+
 	path := "/me/messages"
 	query := url.Values{"$select": {selectFields}, "$top": {"200"}}
 	for path != "" {
@@ -256,7 +282,22 @@ func (p *Provider) collectLegacyReferences(ctx context.Context, refs []LegacyRef
 			}
 			seen[w.ID] = true
 			out.Observed++
-			if _, ok := targets[w.ID]; ok {
+			if target, ok := targets[w.ID]; ok {
+				if selectedN == 0 || (capture && target.N == selectedN) {
+					origin, err := reconciliationOrigin(ctx, raw, state)
+					if selectedN == 0 {
+						enumeratedIntegrity[w.ID] = err == nil
+					}
+					if capture {
+						if err == nil {
+							err = originBudget.retain(ctx, w.ID, origin, state.Metadata.Sender.Address)
+						}
+						if err != nil {
+							return out, incompleteEvidence("enumeration", originCategory(err), err)
+						}
+						enumeratedOrigins[w.ID] = origin
+					}
+				}
 				listed[w.ID] = state
 			}
 		}
@@ -272,13 +313,56 @@ func (p *Provider) collectLegacyReferences(ctx context.Context, refs []LegacyRef
 	for i, r := range refs {
 		inspectRefs[i] = r.Ref
 	}
-	states, failures, e := p.InspectBatch(ctx, inspectRefs)
+	var observe inspectionObserver
+	if capture || selectedN == 0 {
+		observe = func(ref mailbox.MessageRef, raw json.RawMessage, state mailbox.State) error {
+			if selectedN != 0 && targets[string(ref.MessageID)].N != selectedN {
+				return nil
+			}
+			origin, err := reconciliationOrigin(ctx, raw, state)
+			if selectedN == 0 {
+				inspectedIntegrity[string(ref.MessageID)] = err == nil
+			}
+			if !capture {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if err = originBudget.retain(ctx, string(ref.MessageID), origin, state.Metadata.Sender.Address); err != nil {
+				return err
+			}
+			inspectedOrigins[string(ref.MessageID)] = origin
+			return nil
+		}
+	}
+	states, failures, e := p.inspectBatch(ctx, inspectRefs, observe)
 	if e != nil {
-		return out, incompleteEvidence("inspection", "", e)
+		return out, incompleteEvidence("inspection", originCategory(e), e)
 	}
 	if len(states) != len(refs) || len(failures) != len(refs) {
 		return out, incompleteEvidence("inspection", "incomplete-results", errors.New("incomplete original inspection"))
 	}
+	out.listed, out.states, out.failures = listed, states, failures
+	out.enumeratedOrigins, out.inspectedOrigins = enumeratedOrigins, inspectedOrigins
+	out.enumeratedIntegrity, out.inspectedIntegrity = enumeratedIntegrity, inspectedIntegrity
+	return out, nil
+}
+
+func (p *Provider) collectLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int, capture bool) (out LegacyEvidence, err error) {
+	// Errors never return a partial evidence capability.
+	defer func() {
+		if err != nil {
+			out = LegacyEvidence{}
+		}
+	}()
+	reads, err := p.acquireLegacyReferences(ctx, refs, messageLimit, pageLimit, capture, 0)
+	if err != nil {
+		return out, err
+	}
+	out = LegacyEvidence{States: map[int64]mailbox.State{}, EnumeratedStates: map[int64]mailbox.State{}, SenderSourceIntegrity: map[int64]bool{}, Unavailable: map[int64]bool{}, Started: reads.Started, Pages: reads.Pages, Observed: reads.Observed}
+	listed, states, failures := reads.listed, reads.states, reads.failures
+	enumeratedOrigins, inspectedOrigins := reads.enumeratedOrigins, reads.inspectedOrigins
 	for i, r := range refs {
 		if e := ctx.Err(); e != nil {
 			return out, incompleteEvidence("inspection", "", e)
@@ -297,23 +381,42 @@ func (p *Provider) collectLegacyReferences(ctx context.Context, refs []LegacyRef
 			return out, incompleteEvidence("consistency", "reference-appeared", errors.New("reference appeared after enumeration"))
 		}
 		metadataChanged := !reflect.DeepEqual(observed.Metadata, state.Metadata)
-		if metadataChanged && !reconciliationMetadataMatches(observed.Metadata, state.Metadata) {
+		left, right := observed.Metadata.Sender.Address, state.Metadata.Sender.Address
+		senderDisagrees := !strings.EqualFold(left, right)
+		expected := mailbox.State{Ref: r.Ref, Metadata: mailbox.Metadata{InternetMessageID: r.InternetMessageID, Sender: mailbox.Address{Address: r.Sender}}, Memberships: state.Memberships}
+		admitSender := senderDisagrees && reads.enumeratedIntegrity[string(r.Ref.MessageID)] && reads.inspectedIntegrity[string(r.Ref.MessageID)] && mailbox.CheckPrecondition(p.account.ID, expected, state) == nil
+		matches := !metadataChanged || reconciliationMetadataMatches(observed.Metadata, state.Metadata)
+		if !matches && admitSender {
+			matches = reconciliationMetadataMatchesSender(observed.Metadata, state.Metadata, true)
+		}
+		if !matches {
 			failure := incompleteEvidence("consistency", "metadata-changed"+metadataDifference(observed.Metadata, state.Metadata), errors.New("metadata changed after enumeration"))
 			left, right := observed.Metadata.Sender.Address, state.Metadata.Sender.Address
 			if capture && observed.Ref == r.Ref && state.Ref == r.Ref && left != right && (!utf8.ValidString(left) || !utf8.ValidString(right) || !strings.EqualFold(left, right)) {
-				failure.(*ReconciliationError).SenderAddressDiagnostic = &ReconciliationSenderAddressDiagnostic{AccountID: p.account.ID, N: r.N, ImmutableID: r.Ref.MessageID, EnumeratedSenderAddress: left, InspectedSenderAddress: right}
+				enumeratedOrigin, enumOK := enumeratedOrigins[string(r.Ref.MessageID)]
+				inspectedOrigin, inspectOK := inspectedOrigins[string(r.Ref.MessageID)]
+				if !enumOK || !inspectOK || !enumeratedOrigin.MatchesMappedSender(left) || !inspectedOrigin.MatchesMappedSender(right) {
+					return out, incompleteEvidence("consistency", "provenance-state-changed", errOriginMismatch)
+				}
+				failure.(*ReconciliationError).SenderAddressDiagnostic = &ReconciliationSenderAddressDiagnostic{AccountID: p.account.ID, N: r.N, ImmutableID: r.Ref.MessageID, EnumeratedSenderAddress: left, InspectedSenderAddress: right, EnumeratedOrigin: &enumeratedOrigin, InspectedOrigin: &inspectedOrigin}
 			}
 			return out, failure
 		}
-		if e = mailbox.CheckPrecondition(p.account.ID, observed, state); e != nil {
+		precondition := observed
+		if admitSender {
+			precondition.Metadata.Sender.Address = right
+		}
+		if e = mailbox.CheckPrecondition(p.account.ID, precondition, state); e != nil {
 			return out, incompleteEvidence("consistency", "precondition-changed", e)
 		}
-		expected := mailbox.State{Ref: r.Ref, Metadata: mailbox.Metadata{InternetMessageID: r.InternetMessageID, Sender: mailbox.Address{Address: r.Sender}}, Memberships: state.Memberships}
 		if e = mailbox.CheckPrecondition(p.account.ID, expected, state); e != nil {
 			return out, reconciliationBlock("original identity, sender or header conflicts with current evidence; preserve the mirror and request owner review")
 		}
 		if metadataChanged {
 			out.EnumeratedStates[r.N] = reconciliationObservation(observed)
+		}
+		if admitSender {
+			out.SenderSourceIntegrity[r.N] = true
 		}
 		out.States[r.N] = reconciliationObservation(state)
 	}
