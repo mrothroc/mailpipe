@@ -14,12 +14,25 @@ import (
 // equivalence nor the action policy.
 // Clearing fields changes value copies only, never input recipient arrays.
 func reconciliationMetadataMatches(a, b mailbox.Metadata) bool {
+	return reconciliationMetadataMatchesSender(a, b, false)
+}
+
+// The caller may exclude enumeration's sender address only after source
+// integrity and the original historical sender/header checks have passed.
+func reconciliationMetadataMatchesSender(a, b mailbox.Metadata, senderDisagrees bool) bool {
 	// Changed names must survive JSON receipt encoding without byte replacement.
 	// Identical names retain existing address-only comparison semantics.
 	if a.Sender.Name != b.Sender.Name && (!utf8.ValidString(a.Sender.Name) || !utf8.ValidString(b.Sender.Name)) {
 		return false
 	}
-	if !utf8.ValidString(a.Sender.Address) || !utf8.ValidString(b.Sender.Address) || !strings.EqualFold(a.Sender.Address, b.Sender.Address) {
+	if !utf8.ValidString(a.Sender.Address) || !utf8.ValidString(b.Sender.Address) {
+		return false
+	}
+	if senderDisagrees {
+		if a.Sender.Address == "" || b.Sender.Address == "" {
+			return false
+		}
+	} else if !strings.EqualFold(a.Sender.Address, b.Sender.Address) {
 		return false
 	}
 	if (a.Recipients == nil) != (b.Recipients == nil) || len(a.Recipients) != len(b.Recipients) {

@@ -500,6 +500,14 @@ func (p *Provider) TrashBatch(ctx context.Context, requests []mailbox.ReviewedAc
 // InspectBatch preserves ordered per-item checks while keeping Graph's batch
 // limit and wire shapes entirely inside its adapter.
 func (p *Provider) InspectBatch(ctx context.Context, refs []mailbox.MessageRef) ([]mailbox.State, []error, error) {
+	return p.inspectBatch(ctx, refs, nil)
+}
+
+// The recovery observer is private, read-only and nil for public inspection.
+// It sees only successful exact-reference responses; it cannot alter requests.
+type inspectionObserver func(mailbox.MessageRef, json.RawMessage, mailbox.State) error
+
+func (p *Provider) inspectBatch(ctx context.Context, refs []mailbox.MessageRef, observe inspectionObserver) ([]mailbox.State, []error, error) {
 	states := make([]mailbox.State, len(refs))
 	errs := make([]error, len(refs))
 	for _, ref := range refs {
@@ -531,6 +539,11 @@ func (p *Provider) InspectBatch(ctx context.Context, refs []mailbox.MessageRef) 
 					if e == nil && states[i].Ref != refs[i] {
 						e = stale("inspection identity differs")
 					}
+				}
+			}
+			if e == nil && observe != nil {
+				if err := observe(refs[i], response.Body, states[i]); err != nil {
+					return states, errs, err
 				}
 			}
 			errs[i] = remoteError(e)

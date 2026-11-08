@@ -28,11 +28,14 @@ type LegacyReconciliation struct {
 	Verification LegacyVerification
 	// Only verified originals with a reviewed metadata exception have a first
 	// observation.
-	EnumeratedStates  map[int64]mailbox.State
-	Unavailable       map[int64]string
-	Coverage          string
-	Started, Finished time.Time
-	Pages, Observed   int
+	EnumeratedStates map[int64]mailbox.State
+	// Trusted adapter stamps for independently checked source-to-mapping pairs.
+	// Only noncase sender disagreements may supply this capability.
+	SenderSourceIntegrity map[int64]bool
+	Unavailable           map[int64]string
+	Coverage              string
+	Started, Finished     time.Time
+	Pages, Observed       int
 }
 
 type LegacyReconciliationVerifier interface {
@@ -40,6 +43,7 @@ type LegacyReconciliationVerifier interface {
 }
 
 type LegacyReconciliationItem struct {
+	SenderAddressDisagrees bool                 `json:"sender_address_disagrees"`
 	SenderNameChanged      bool                 `json:"sender_name_changed"`
 	SenderCasingChanged    bool                 `json:"sender_casing_changed"`
 	RecipientCasingChanged bool                 `json:"recipient_casing_changed"`
@@ -97,8 +101,9 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 	if len(v.Unavailable) > 0 && len(v.Verification.States) == 0 {
 		return r, stale("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference or ask the owner for an approved evidence policy")
 	}
-	r = LegacyReconciliationReceipt{Version: 5, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
+	r = LegacyReconciliationReceipt{Version: 6, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
 	acceptedPairs := make(map[int64]bool, len(v.EnumeratedStates))
+	acceptedIntegrity := make(map[int64]bool, len(v.SenderSourceIntegrity))
 	for _, m := range p.Live {
 		if m.GraphID == "" {
 			return LegacyReconciliationReceipt{}, stale("historical immutable identity is missing")
@@ -128,13 +133,17 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 			item.Disposition = "verified"
 			item.State = &state
 			if enumerated, ok := v.EnumeratedStates[m.N]; ok {
-				if e = reconciliationMetadataPair(a.ID, enumerated, state); e != nil {
+				if e = reconciliationMetadataPair(a.ID, enumerated, state, v.SenderSourceIntegrity[m.N]); e != nil {
 					return LegacyReconciliationReceipt{}, e
 				}
 				enumerated = reconciliationSnapshot(enumerated)
 				item.EnumeratedState = &enumerated
 				item.SenderNameChanged = enumerated.Metadata.Sender.Name != state.Metadata.Sender.Name
-				item.SenderCasingChanged = enumerated.Metadata.Sender.Address != state.Metadata.Sender.Address
+				item.SenderAddressDisagrees = !strings.EqualFold(enumerated.Metadata.Sender.Address, state.Metadata.Sender.Address)
+				item.SenderCasingChanged = !item.SenderAddressDisagrees && enumerated.Metadata.Sender.Address != state.Metadata.Sender.Address
+				if item.SenderAddressDisagrees {
+					acceptedIntegrity[m.N] = true
+				}
 				item.RecipientCasingChanged = !reflect.DeepEqual(enumerated.Metadata.Recipients, state.Metadata.Recipients)
 				acceptedPairs[m.N] = true
 			}
@@ -144,6 +153,11 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 	for n := range v.EnumeratedStates {
 		if !acceptedPairs[n] {
 			return LegacyReconciliationReceipt{}, errors.New("store: metadata observation requires a verified original")
+		}
+	}
+	for n, valid := range v.SenderSourceIntegrity {
+		if !valid || !acceptedIntegrity[n] {
+			return LegacyReconciliationReceipt{}, errors.New("store: source integrity requires a verified sender disagreement")
 		}
 	}
 	for _, m := range p.Removed {
@@ -157,7 +171,7 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 		Source, Coverage string
 		Folders          map[string]mailbox.CollectionRef
 		Items            []LegacyReconciliationItem
-	}{"mailpipe-legacy-reconciliation-v5", a, p.digest, v.Coverage, r.Folders, r.Items})
+	}{"mailpipe-legacy-reconciliation-v6", a, p.digest, v.Coverage, r.Folders, r.Items})
 	if e != nil {
 		return LegacyReconciliationReceipt{}, e
 	}
@@ -168,19 +182,27 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 
 // Independently validate the adapter's exception at the persistence boundary.
 // Recipient names and order remain exact; sender names are reviewed evidence.
-func reconciliationMetadataPair(account mailbox.AccountID, enumerated, inspected mailbox.State) error {
+func reconciliationMetadataPair(account mailbox.AccountID, enumerated, inspected mailbox.State, integrity bool) error {
 	invalid := func() error { return stale("reviewed metadata observations disagree") }
 	if enumerated.Validate(account) != nil || inspected.Validate(account) != nil || len(enumerated.Memberships) != 1 || len(inspected.Memberships) != 1 {
 		return invalid()
 	}
-	if err := mailbox.CheckPrecondition(account, enumerated, inspected); err != nil {
+	disagrees := !strings.EqualFold(enumerated.Metadata.Sender.Address, inspected.Metadata.Sender.Address)
+	precondition := enumerated
+	if disagrees {
+		if !integrity || enumerated.Metadata.Sender.Address == "" || inspected.Metadata.Sender.Address == "" {
+			return invalid()
+		}
+		precondition.Metadata.Sender.Address = inspected.Metadata.Sender.Address
+	}
+	if err := mailbox.CheckPrecondition(account, precondition, inspected); err != nil {
 		return err
 	}
 	a, b := enumerated.Metadata, inspected.Metadata
 	if a.Sender.Name != b.Sender.Name && (!utf8.ValidString(a.Sender.Name) || !utf8.ValidString(b.Sender.Name)) {
 		return invalid()
 	}
-	if !utf8.ValidString(a.Sender.Address) || !utf8.ValidString(b.Sender.Address) || !strings.EqualFold(a.Sender.Address, b.Sender.Address) {
+	if !utf8.ValidString(a.Sender.Address) || !utf8.ValidString(b.Sender.Address) {
 		return invalid()
 	}
 	if reflect.DeepEqual(a, b) || (a.Recipients == nil) != (b.Recipients == nil) || len(a.Recipients) != len(b.Recipients) {
@@ -225,6 +247,11 @@ func ownReconciliation(v LegacyReconciliation) LegacyReconciliation {
 	}
 	v.Verification.States = states(v.Verification.States)
 	v.EnumeratedStates = states(v.EnumeratedStates)
+	integrity := make(map[int64]bool, len(v.SenderSourceIntegrity))
+	for n, valid := range v.SenderSourceIntegrity {
+		integrity[n] = valid
+	}
+	v.SenderSourceIntegrity = integrity
 	folders := make(map[string]mailbox.CollectionRef, len(v.Verification.Folders))
 	for name, ref := range v.Verification.Folders {
 		folders[name] = ref

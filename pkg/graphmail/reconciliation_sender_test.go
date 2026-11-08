@@ -41,12 +41,13 @@ func TestReconciliationSenderDiagnostic(t *testing.T) {
 		t.Run(tc.relation, func(t *testing.T) {
 			proof, err := collectCasing(t, nil, nil, func(m map[string]any) {
 				m["sender"] = map[string]any{"emailAddress": map[string]string{"address": tc.address}}
+				m["subject"] = "Changed invented subject"
 			})
 			var failure *graphmail.ReconciliationError
 			if !errors.As(err, &failure) || !reflect.DeepEqual(proof, graphmail.LegacyEvidence{}) {
 				t.Fatal("invalid sender produced evidence")
 			}
-			if !strings.Contains(failure.Reason, "fields=sender-address;") || !strings.Contains(failure.Reason, "sender-address="+tc.relation+";") {
+			if !strings.Contains(failure.Reason, "fields=sender-address,subject;") || !strings.Contains(failure.Reason, "sender-address="+tc.relation+";") {
 				t.Fatal("missing safe sender relation")
 			}
 			if strings.Contains(failure.Error(), tc.address) || len(failure.Error()) > 1024 || failure.Unwrap() != failure.Cause {
