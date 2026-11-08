@@ -65,8 +65,11 @@ func TestReconciliationCasingReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Version != 6 {
-		t.Fatalf("new casing review needs v6, got %d", r.Version)
+	if r.Items[0].RecipientNameChanged {
+		t.Fatal("address-only evidence acquired a name flag")
+	}
+	if r.Version != 7 {
+		t.Fatalf("new casing review needs v7, got %d", r.Version)
 	}
 	raw, _ := json.Marshal(r.Items[0])
 	var item struct {
@@ -96,7 +99,7 @@ func TestReconciliationCasingValidationAndDigest(t *testing.T) {
 		}
 		return out
 	}
-	for _, kind := range []string{"unknown", "historical", "unavailable", "redundant", "account", "locator", "membership", "revision", "name", "order", "cardinality", "multiplicity", "trim", "address", "invalid-utf8", "subject", "header", "sender-name-invalid", "received", "preview", "read", "attachments"} {
+	for _, kind := range []string{"unknown", "historical", "unavailable", "redundant", "account", "locator", "membership", "revision", "name-invalid", "order", "cardinality", "multiplicity", "trim", "address", "invalid-utf8", "subject", "header", "sender-name-invalid", "received", "preview", "read", "attachments"} {
 		t.Run(kind, func(t *testing.T) {
 			x := clone()
 			e := x.EnumeratedStates[n]
@@ -119,8 +122,8 @@ func TestReconciliationCasingValidationAndDigest(t *testing.T) {
 				e.Memberships[0].Collection.CollectionID = "other"
 			case "revision":
 				e.Revision = "other"
-			case "name":
-				e.Metadata.Recipients[0].Name = "READER"
+			case "name-invalid":
+				e.Metadata.Recipients[0].Name = "\xff"
 			case "order":
 				e.Metadata.Recipients = append(e.Metadata.Recipients, mailbox.Address{Address: "second@example.org", Name: "Other"})
 				s.Metadata.Recipients = append([]mailbox.Address{{Address: "second@example.org", Name: "Other"}}, s.Metadata.Recipients...)
@@ -252,7 +255,7 @@ func reconciliationV2Digest(t *testing.T, r LegacyReconciliationReceipt) string 
 }
 
 func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
-	for _, kind := range []string{"valid", "changed-pair", "changed-sender", "changed-name", "missing-pair", "v1", "v2", "v3", "v4", "v5"} {
+	for _, kind := range []string{"valid", "changed-pair", "changed-sender", "changed-name", "missing-pair", "v1", "v2", "v3", "v4", "v5", "v6"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			path, a, p, v := casingPreparation(t)
@@ -261,7 +264,7 @@ func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
 			enumerated.Metadata.Sender.Address = "SENDER@Example.org"
 			enumerated.Metadata.Sender.Name = "Before Display"
 			v.EnumeratedStates[n] = enumerated
-			if kind == "v1" || kind == "v2" || kind == "v3" || kind == "v4" || kind == "v5" {
+			if kind == "v1" || kind == "v2" || kind == "v3" || kind == "v4" || kind == "v5" || kind == "v6" {
 				v.EnumeratedStates = nil
 			}
 			r, err := ReviewLegacyReconciliation(a, p, v)
@@ -283,6 +286,9 @@ func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
 			}
 			if kind == "v5" {
 				confirmation = reconciliationV5Digest(t, r)
+			}
+			if kind == "v6" {
+				confirmation = reconciliationV6Digest(t, r)
 			}
 			owned := ownReconciliation(v)
 			if kind == "changed-pair" {
@@ -394,7 +400,7 @@ func TestReconciliationCasingBindingPreservesHistoryAndAuthoritativeInventory(t 
 		t.Fatal(err)
 	}
 	read, found, err := ReadLegacyReconciliationReceipt(ctx, path, a)
-	if err != nil || !found || read.Version != 6 || !read.Items[0].SenderNameChanged || read.Items[0].EnumeratedState.Metadata.Sender.Name != "Before Display" || !read.Items[0].SenderCasingChanged || read.Items[0].EnumeratedState.Metadata.Sender.Address != enumerated.Metadata.Sender.Address || read.Digest != r.Digest || read.Items[0].EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" {
+	if err != nil || !found || read.Version != 7 || !read.Items[0].SenderNameChanged || read.Items[0].EnumeratedState.Metadata.Sender.Name != "Before Display" || !read.Items[0].SenderCasingChanged || read.Items[0].EnumeratedState.Metadata.Sender.Address != enumerated.Metadata.Sender.Address || read.Digest != r.Digest || read.Items[0].EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" {
 		t.Fatal("receipt pair not retained offline", err)
 	}
 }

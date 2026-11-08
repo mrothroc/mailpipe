@@ -52,15 +52,18 @@ func TestReconciliationSenderAuthorityIntegrityAndStrictGuards(t *testing.T) {
 				g.listed[0]["changeKey"], g.inspected[0]["changeKey"] = "old", "new"
 			}
 			proof, err := p.ReconcileLegacyReferences(context.Background(), refs)
-			valid := kind == "valid" || kind == "sender-fallback" || kind == "unknown-exact" || kind == "unknown-case"
+			valid := kind == "recipient-name" || kind == "valid" || kind == "sender-fallback" || kind == "unknown-exact" || kind == "unknown-case"
 			if (err == nil) != valid {
 				t.Fatal("directional source-integrity guard", kind, err)
 			}
 			if !valid && !reflect.DeepEqual(proof, LegacyEvidence{}) {
 				t.Fatal("failed pair returned partial proof")
 			}
-			if valid && proof.SenderSourceIntegrity[1] != (kind == "valid" || kind == "sender-fallback") {
+			if valid && proof.SenderSourceIntegrity[1] != (kind == "recipient-name" || kind == "valid" || kind == "sender-fallback") {
 				t.Fatal("unknown provenance supplied new authority")
+			}
+			if kind == "recipient-name" && (proof.EnumeratedStates[1].Metadata.Recipients[0].Name != "" || proof.States[1].Metadata.Recipients[0].Name != "Different") {
+				t.Fatal("combined raw names lost")
 			}
 			if g.calls != 1 || g.batchCalls != 1 || !reflect.DeepEqual(g.requests, []string{"target", "other"}) {
 				t.Fatal("authority changed request protocol")

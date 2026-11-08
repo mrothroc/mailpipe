@@ -30,15 +30,17 @@ coverage and observation times, counts, and **every message disposition**:
   `original_memberships`, the current memberships in `state`, and
   `membership_changed`. A collection change is explicit old-to-current evidence,
   not an identity replacement; every change requires owner review. If
-  `sender_address_disagrees`, `sender_casing_changed`, `recipient_casing_changed`
-  or `sender_name_changed`
-  is true, compare the exact `enumerated_state` with inspection `state`. Sender
+  `sender_address_disagrees`, `sender_casing_changed`, `recipient_casing_changed`,
+  `recipient_name_changed` or `sender_name_changed`
+  is true, compare the exact `enumerated_state` with inspection `state`. Sender and recipient
   display names and sender/indexed-recipient address casing are separate reviewed
   differences. A noncase sender disagreement selects inspection only when its
   sender/header still pass the original history checks and both source mappings
   are validated. It does not declare aliases equivalent or establish ownership.
-  Noncase disagreement and case-only flags are mutually exclusive. Recipient
-  names, order, duplicates and other metadata stay strict.
+  `sender_address_disagrees` and `sender_casing_changed` are mutually exclusive.
+  Recipient name and casing flags remain independent. Recipient
+  address relationships, positions, shape, duplicate multiplicity and other
+  metadata stay strict.
   Review the complete pair, including private overflow output.
 - `unavailable`: a completed enumeration did not observe this exact ID, and a
   subsequent exact lookup returned Graph's recognized item-not-found response.
@@ -54,8 +56,8 @@ incomplete run produces no executable proposal digest.
 
 Only if the owner knows that **all** history belongs to the displayed account,
 including every unavailable row, and approves every displayed old-to-current
-membership change, sender-address disagreement, address casing pair and sender
-display-name pair, obtain
+membership change, sender-address disagreement, address casing pair and
+sender/recipient display-name pair, obtain
 specific approval for local attribution:
 
 ```text
@@ -234,8 +236,8 @@ and [immutable-ID guidance](https://learn.microsoft.com/en-us/graph/outlook-immu
 A found original must match its exact immutable reference, header and sender.
 A different collection is accepted only as explicit reviewed state in this
 reconciliation path. Enumeration and inspection must agree on current metadata,
-membership and any recorded revision, except reviewed same-ID sender display-name
-differences, sender/recipient address casing, and the directional sender rule
+membership and any recorded revision, except reviewed same-ID sender and indexed
+recipient display-name differences, sender/recipient address casing, and the directional sender rule
 below. The name exception preserves both exact decoded observations;
 changed names must be valid UTF-8. It does not normalize names or assert that two
 display names identify the same person or owner. The casing rule is unchanged:
@@ -246,6 +248,15 @@ no address is globally lowercased. Strict `account bind`, ordinary sync and acti
 preconditions retain their existing comparisons. An unavailable historical
 source-folder mapping remains blocked; no name or collection is guessed.
 
+`recipient_name_changed` reports any byte difference in names at corresponding
+positions; `recipient_casing_changed` reports address spelling differences only.
+Each changed name must be valid UTF-8. Empty, whitespace and control-containing
+names remain exact untrusted strings in both raw states, without normalization.
+The existing To-then-Cc order, nilness, cardinality and duplicate multiplicity stay
+strict. Comparison never sorts or matches across slots. Indistinguishable
+duplicate address slots have position-only comparison, with no inferred cross-slot
+identity; review both full arrays. Names do not establish identity or ownership.
+
 For the same authenticated account and exact immutable reference, recovery may
 select inspection's sender address despite a noncase enumeration disagreement
 only when inspection still passes the ORIGINAL historical sender/header checks.
@@ -255,19 +266,19 @@ nonempty valid UTF-8. The report retains both complete raw states and derives
 `sender_address_disagrees` separately from case-only `sender_casing_changed`.
 This is directional observation selection, not trimming, alias expansion, RFC
 equivalence or permission to replace original history. All unrelated metadata,
-recipient names/order/shape, current memberships and recorded revisions remain
-strict. Default collection retains only integrity stamps, not raw source traces.
+recipient address positions/shape/multiplicity, current memberships and recorded
+revisions remain strict. Default collection retains only integrity stamps, not raw source traces.
 
-New proposals and receipts use JSON version 6 and digest domain
-`mailpipe-legacy-reconciliation-v6`.
+New proposals and receipts use JSON version 7 and digest domain
+`mailpipe-legacy-reconciliation-v7`.
 The proposal covers original and current membership evidence for every live
 original, plus both exact observations and derived flags for accepted
-sender disagreements, address-casing or sender-name differences, alongside the account, complete source
-digest, folder mappings and all dispositions.
+sender disagreements, address-casing or sender/recipient-name differences,
+alongside the account, complete source digest, folder mappings and all dispositions.
 Changing either raw observation changes the proposal digest even when the
-relationship remains permitted. A version-1 through version-5 pending proposal
+relationship remains permitted. A version-1 through version-6 pending proposal
 cannot execute a new binding, even without differences; obtain a fresh preview.
-Committed version-1 through version-5 receipts remain readable offline and retain
+Committed version-1 through version-6 receipts remain readable offline and retain
 their exact-confirmation routing-repair behavior. They are not rewritten,
 reinterpreted as new evidence or replayed through binding. See the
 [exact-ID reconciliation decision](adr/0010-exact-id-reconciliation.md).

@@ -38,8 +38,8 @@ func TestReconciliationSenderNamePair(t *testing.T) {
 			if err = json.Unmarshal(raw, &flags); err != nil {
 				t.Fatal(err)
 			}
-			if r.Version != 6 || flags["sender_name_changed"] != true || flags["sender_casing_changed"] != combined || flags["recipient_casing_changed"] != combined {
-				t.Fatal("flags or v6 not derived")
+			if r.Version != 7 || flags["sender_name_changed"] != true || flags["sender_casing_changed"] != combined || flags["recipient_casing_changed"] != combined {
+				t.Fatal("flags or v7 not derived")
 			}
 			if r.Items[0].EnumeratedState.Metadata.Sender.Name != e.Metadata.Sender.Name || r.Items[0].State.Metadata.Sender.Name != s.Metadata.Sender.Name {
 				t.Fatal("raw names lost")

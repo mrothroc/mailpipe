@@ -28,8 +28,8 @@ func TestReconciliationSenderPairReview(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sender pair rejected: %v", err)
 			}
-			if r.Version != 6 {
-				t.Fatal("new proposal must use v6")
+			if r.Version != 7 {
+				t.Fatal("new proposal must use v7")
 			}
 			raw, _ := json.Marshal(r.Items[0])
 			var item struct {
@@ -94,7 +94,7 @@ func TestReconciliationSenderPairValidationAndRawDigest(t *testing.T) {
 		}
 		return x
 	}
-	for _, kind := range []string{"trim", "joint", "alias", "dot", "different", "name-invalid", "invalid", "header", "subject", "recipient-name", "recipient-order", "revision", "membership", "account", "id"} {
+	for _, kind := range []string{"trim", "joint", "alias", "dot", "different", "name-invalid", "invalid", "header", "subject", "recipient-name-invalid", "recipient-order", "revision", "membership", "account", "id"} {
 		t.Run(kind, func(t *testing.T) {
 			x := clone()
 			e := x.EnumeratedStates[n]
@@ -117,8 +117,8 @@ func TestReconciliationSenderPairValidationAndRawDigest(t *testing.T) {
 				e.Metadata.InternetMessageID = "<other@example.org>"
 			case "subject":
 				e.Metadata.Subject = "Changed"
-			case "recipient-name":
-				e.Metadata.Recipients[0].Name = "READER"
+			case "recipient-name-invalid":
+				e.Metadata.Recipients[0].Name = "\xff"
 			case "recipient-order":
 				e.Metadata.Recipients = append(e.Metadata.Recipients, mailbox.Address{Address: "second@example.org", Name: "Other"})
 				s := x.Verification.States[n]

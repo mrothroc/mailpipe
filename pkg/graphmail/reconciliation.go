@@ -28,7 +28,7 @@ type LegacyReference struct {
 type LegacyEvidence struct {
 	States map[int64]mailbox.State
 	// EnumeratedStates retains the exact first observation only for accepted
-	// address casing, sender-name or noncase sender-address differences. States
+	// address casing, display-name or noncase sender-address differences. States
 	// retains the exact inspection result.
 	EnumeratedStates map[int64]mailbox.State
 	// SenderSourceIntegrity is present only for an admitted noncase sender pair.

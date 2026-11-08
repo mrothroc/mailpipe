@@ -64,19 +64,23 @@ A historical Graph mirror can require attribution before sync while strict
 `account bind` refuses a stored live reference that is now unavailable. Use
 `mailpipe account reconcile` in that same private context to preview complete
 read-only evidence and review every disposition and old-to-current membership
-change, sender-address disagreement, address casing pair and sender display-name
-pair. These are
+change, sender-address disagreement, address casing pair and sender/recipient
+display-name pair. These are
 reviewed presentation differences on the same independently verified exact ID,
 not ownership or continuity proof. Recovery may select an inspection sender
 despite a noncase enumeration disagreement only when both source mappings are
 validated and inspection still passes the original historical sender/header
 checks. Both changed addresses must be nonempty valid UTF-8; this does not equate
-aliases or authorize replacement of historical metadata. Recipient
-names, order and all other metadata stay strict. Address casing keeps its
+aliases or authorize replacement of historical metadata. Recipient address
+relationships, positions, nilness, cardinality, duplicate
+multiplicity and all other metadata stay strict. Reviewed name differences apply
+only at corresponding positions, with valid UTF-8 for changed names; there is no
+sorting or cross-slot identity inference, including indistinguishable duplicates.
+Address casing keeps its
 existing untrimmed comparison. Both exact observations are retained
-and included with independently derived flags in the version-6 proposal digest.
+and included with independently derived flags in the version-7 proposal digest.
 Older pending proposals cannot authorize a new binding; committed version-1
-through version-5 receipts retain offline display and exact stored-confirmation
+through version-6 receipts retain offline display and exact stored-confirmation
 routing repair without rewriting history. Each original immutable ID is
 verified independently; matching headers
 on a different ID never replace it or transfer history. With specific owner approval,

@@ -26,7 +26,7 @@ func TestReconcileInspectionSenderMatchesHistory(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("history-matching inspection blocked: %d %s", code, stderr)
 	}
-	if !strings.Contains(out, `"version":6`) || !strings.Contains(out, `"sender_address_disagrees":true`) || !strings.Contains(out, `"sender_casing_changed":false`) || !strings.Contains(out, "enumerated-from@example.org") || !strings.Contains(out, "sender@example.org") {
+	if !strings.Contains(out, `"version":7`) || !strings.Contains(out, `"sender_address_disagrees":true`) || !strings.Contains(out, `"sender_casing_changed":false`) || !strings.Contains(out, "enumerated-from@example.org") || !strings.Contains(out, "sender@example.org") {
 		t.Fatal("missing directional raw evidence/flags", out)
 	}
 	if _, found, err := store.ReadLegacyReconciliationReceipt(context.Background(), e.db, subject.Account()); err != nil || found {

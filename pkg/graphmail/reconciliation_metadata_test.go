@@ -28,7 +28,7 @@ func TestMetadataRelationsAreDiagnosticOnly(t *testing.T) {
 	if !reflect.DeepEqual(a, oldA.Metadata) || !reflect.DeepEqual(b, oldB.Metadata) {
 		t.Fatal("comparison/diagnostics mutated metadata")
 	}
-	for _, kind := range []string{"sender-trim", "sender-invalid", "recipient-trim", "recipient-invalid", "sender-name-invalid", "recipient-name", "nil-empty"} {
+	for _, kind := range []string{"sender-trim", "sender-invalid", "recipient-trim", "recipient-invalid", "sender-name-invalid", "recipient-name-invalid", "nil-empty"} {
 		t.Run(kind, func(t *testing.T) {
 			x, y := reconciliationObservation(mailbox.State{Metadata: a}).Metadata, reconciliationObservation(mailbox.State{Metadata: b}).Metadata
 			switch kind {
@@ -42,8 +42,8 @@ func TestMetadataRelationsAreDiagnosticOnly(t *testing.T) {
 				y.Recipients[0].Address = string([]byte{0xfe})
 			case "sender-name-invalid":
 				y.Sender.Name = string([]byte{0xff})
-			case "recipient-name":
-				y.Recipients[0].Name = "READER"
+			case "recipient-name-invalid":
+				y.Recipients[0].Name = "\xff"
 			case "nil-empty":
 				x.Recipients = nil
 				y.Recipients = []mailbox.Address{}

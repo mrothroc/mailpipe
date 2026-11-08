@@ -70,7 +70,7 @@ func TestReconciliationV5FrozenShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(retained) != string(frozen) || string(current) == string(frozen) || r.Version != 6 || r.Digest == reconciliationV5Digest(t, r) {
-		t.Fatal("v5 frozen fields or v6 domain separation changed")
+	if string(retained) != string(frozen) || string(current) == string(frozen) || r.Version != 7 || r.Digest == reconciliationV5Digest(t, r) {
+		t.Fatal("v5 frozen fields or current domain separation changed")
 	}
 }

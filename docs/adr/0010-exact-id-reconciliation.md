@@ -28,8 +28,8 @@ and original sender address. Enumeration and inspection must agree on current
 metadata, membership and any recorded revision, with reviewed recovery-only
 exceptions: sender and corresponding recipient address strings may differ under
 Go's `strings.EqualFold` Unicode simple case folding. Recipient slice
-representation, length, order and display names remain exact;
-duplicate entries are retained. Sender display names may differ as reviewed
+representation, length, indexed address relationships and duplicate multiplicity
+remain strict. Sender and indexed recipient display names may differ as reviewed
 presentation metadata on that same exact ID. Changed name pairs must be valid
 UTF-8 and retain both exact decoded strings, including empty or whitespace
 spellings; no name normalization or identity inference is performed. All
@@ -61,7 +61,7 @@ proposal digest covers both exact observations, membership, address-casing and
 sender-name flags, all dispositions, account/provider, complete history digest
 and folder mappings. Names and address casing are not normalized in stored
 observations or the digest. The owner reviews
-every old-to-current change, address-casing pair and sender-name pair, and
+every old-to-current change, address-casing pair and display-name pair, and
 confirms ALL
 history using the exact account, history and reconciliation confirmations.
 Execute regenerates evidence under exclusive lifecycle ownership; changed
@@ -77,11 +77,26 @@ new exception. Existing exact, casing and sender-name behavior is preserved.
 Changed noncase addresses must be nonempty valid UTF-8. This is directional
 observation selection, not alias equivalence, normalization or current-sender
 authority over original history. Only enumeration's sender address is excluded
-on value copies for this reviewed comparison; recipient names/order/shape, other
+on value copies for this reviewed comparison; recipient address order/shape, other
 metadata, exact identity/header, membership and recorded revision remain strict.
 Both complete raw states and the independently derived `sender_address_disagrees`
 flag are digest-bound. That flag and case-only `sender_casing_changed` are mutually
 exclusive; sender-name and recipient-casing flags remain independent.
+
+Version-7 items add `recipient_name_changed`, derived from byte differences in
+names at corresponding recipient positions. `recipient_casing_changed` derives
+only from indexed address spellings; name-only changes never set it. Either
+exception retains both complete raw states, independently validated by storage
+and covered by the proposal digest. Full recipient value copies clear only the
+approved Address/Name fields for comparison, so future fields remain strict.
+Changed names must be valid UTF-8; unchanged names preserve the previous path.
+No names are normalized or used as identity evidence. Inspection is current
+metadata; enumeration remains review evidence and original history is unchanged.
+
+Comparison follows the existing deterministic To-then-Cc sequence. Neither layer
+sorts, matches or deduplicates recipients. Indistinguishable duplicate address
+slots retain position-only comparison: there is no cross-slot identity inference
+or claim to distinguish an unobservable swap. Both full arrays remain reviewable.
 
 Strict binding and generic message/action comparators retain membership equality.
 Existing challenge, cardinality, anchor, digest, verified backup, lifecycle and
@@ -93,11 +108,11 @@ another ID retains or receives a separate number and no copied provenance.
 Newly observed nonhistorical IDs are not published during attribution. Historical
 pending plans remain readable and cannot acquire execution preconditions.
 
-Receipt JSON evolves within the existing schema. New proposals use version 6
-and digest domain `mailpipe-legacy-reconciliation-v6`, even without metadata
-differences. Pending version-1 through version-5 confirmations cannot authorize
+Receipt JSON evolves within the existing schema. New proposals use version 7
+and digest domain `mailpipe-legacy-reconciliation-v7`, even without metadata
+differences. Pending version-1 through version-6 confirmations cannot authorize
 new binding.
-Committed version-1 through version-5 receipts
+Committed version-1 through version-6 receipts
 remain offline audit records and support same-account routing repair with their
 exact stored confirmations. They are not rewritten or replayed as new binding
 evidence.
@@ -111,13 +126,14 @@ affect which pairs pass, but the digest always hashes the raw pair, not folded
 keys. Changed raw names or address casing therefore require fresh review.
 Sender presentation differences establish neither ownership nor continuity: the
 independent exact reference, account, header, original sender address, membership
-and revision checks still govern. Recipient names and all non-permitted future
-fields remain strict.
+and revision checks still govern. Recipient address relationships, positions,
+shape, multiplicity and all non-permitted future fields remain strict.
 
 Rejected metadata comparisons report only fixed field labels and positional
 string relationships. Address relations select invalid encoding, exact,
 untrimmed case-only, trim-only, trim-and-case, then different; recipient nilness
-and cardinality differences take precedence. Recipient names remain exact.
+and cardinality differences take precedence. Name diagnostic relations compare
+exact decoded strings and remain independent of admission.
 Trimming is diagnostic only, never accepted evidence. Labels disclose no values,
 add no reads and cannot authorize a proposal or action. Cause identity and zero
 evidence on failure remain unchanged.

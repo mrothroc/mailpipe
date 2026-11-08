@@ -103,7 +103,7 @@ func selectedObservationFixture(t *testing.T) (*Provider, *selectedObservationTr
 }
 
 func TestSelectedObservationIsNotAdmission(t *testing.T) {
-	for _, kind := range []string{"equal", "sender-different", "subject", "original-header", "original-sender", "revision", "membership", "recipient-name", "recipient-order", "recipient-shape", "other-unavailable", "other-origin-unsupported"} {
+	for _, kind := range []string{"equal", "sender-different", "subject", "original-header", "original-sender", "revision", "membership", "recipient-name", "recipient-name-and-preview", "recipient-order", "recipient-shape", "other-unavailable", "other-origin-unsupported"} {
 		t.Run(kind, func(t *testing.T) {
 			p, g, refs := selectedObservationFixture(t)
 			switch kind {
@@ -121,13 +121,16 @@ func TestSelectedObservationIsNotAdmission(t *testing.T) {
 				g.inspected[0]["parentFolderId"] = "archive"
 			case "recipient-shape":
 				g.inspected[0]["toRecipients"] = []any{map[string]any{"emailAddress": map[string]string{"address": "to@example.org"}}}
-			case "recipient-name", "recipient-order":
+			case "recipient-name", "recipient-name-and-preview", "recipient-order":
 				left := []any{map[string]any{"emailAddress": map[string]string{"address": "to@example.org", "name": "First"}}, map[string]any{"emailAddress": map[string]string{"address": "cc@example.org", "name": "Second"}}}
 				right := []any{left[1], left[0]}
-				if kind == "recipient-name" {
+				if kind == "recipient-name" || kind == "recipient-name-and-preview" {
 					right = []any{map[string]any{"emailAddress": map[string]string{"address": "to@example.org", "name": "Changed"}}, left[1]}
 				}
 				g.listed[0]["toRecipients"], g.inspected[0]["toRecipients"] = left, right
+				if kind == "recipient-name-and-preview" {
+					g.inspected[0]["bodyPreview"] = "Changed"
+				}
 			case "other-unavailable":
 				g.listed = g.listed[:1]
 				g.status["other"] = 404
@@ -145,7 +148,11 @@ func TestSelectedObservationIsNotAdmission(t *testing.T) {
 			if kind != "equal" && kind != "sender-different" && kind != "other-unavailable" && kind != "other-origin-unsupported" {
 				g.calls, g.batchCalls, g.requests = 0, 0, nil
 				proof, err := p.ReconcileLegacyReferences(context.Background(), refs)
-				if err == nil || !reflect.DeepEqual(proof, LegacyEvidence{}) {
+				if kind == "recipient-name" {
+					if err != nil || proof.EnumeratedStates[1].Metadata.Recipients[0].Name != "First" || proof.States[1].Metadata.Recipients[0].Name != "Changed" {
+						t.Fatal("reviewed recipient names lost", err)
+					}
+				} else if err == nil || !reflect.DeepEqual(proof, LegacyEvidence{}) {
 					t.Fatal("diagnostic relaxed normal admission")
 				}
 			}
