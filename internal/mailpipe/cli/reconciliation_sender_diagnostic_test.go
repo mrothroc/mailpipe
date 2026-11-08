@@ -103,7 +103,7 @@ func TestReconcileSenderDiagnosticControls(t *testing.T) {
 			}
 			code, out, stderr := e.run(args...)
 			if kind == "success" {
-				if code != 0 || !strings.Contains(out, `"version":6`) {
+				if code != 0 || !strings.Contains(out, `"version":7`) {
 					t.Fatalf("diagnostic option changed successful preview %d %s", code, stderr)
 				}
 				first := reconciliationRows(t, out)[0]["reconciliation_digest"]

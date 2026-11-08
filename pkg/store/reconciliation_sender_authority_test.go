@@ -32,7 +32,7 @@ func TestReconciliationSenderAuthorityIndependentReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	i := r.Items[0]
-	if r.Version != 6 || !i.SenderAddressDisagrees || i.SenderCasingChanged || !i.SenderNameChanged || !i.RecipientCasingChanged || i.EnumeratedState.Metadata.Sender.Address != "enumerated@example.org" || i.State.Metadata.Sender.Address != v.Verification.States[n].Metadata.Sender.Address {
+	if r.Version != 7 || !i.SenderAddressDisagrees || i.SenderCasingChanged || !i.SenderNameChanged || !i.RecipientCasingChanged || i.EnumeratedState.Metadata.Sender.Address != "enumerated@example.org" || i.State.Metadata.Sender.Address != v.Verification.States[n].Metadata.Sender.Address {
 		t.Fatal("raw directional flags not independently derived")
 	}
 	owned := ownReconciliation(v)
@@ -68,7 +68,7 @@ func TestReconciliationSenderAuthorityIndependentReview(t *testing.T) {
 }
 
 func TestReconciliationSenderAuthorityRejectsUntrustedPairs(t *testing.T) {
-	for _, kind := range []string{"missing-stamp", "false-stamp", "wrong-stamp", "extra-stamp", "no-pair", "case-stamp", "empty-before", "empty-after", "invalid-before", "invalid-after", "original-sender", "header", "ref", "locator", "account", "membership", "revision", "recipient-name", "recipient-order", "recipient-shape", "subject"} {
+	for _, kind := range []string{"missing-stamp", "false-stamp", "wrong-stamp", "extra-stamp", "no-pair", "case-stamp", "empty-before", "empty-after", "invalid-before", "invalid-after", "original-sender", "header", "ref", "locator", "account", "membership", "revision", "recipient-name-invalid", "recipient-order", "recipient-shape", "subject"} {
 		t.Run(kind, func(t *testing.T) {
 			_, a, p, v := senderAuthorityPreparation(t)
 			n := p.Live[0].N
@@ -109,8 +109,8 @@ func TestReconciliationSenderAuthorityRejectsUntrustedPairs(t *testing.T) {
 			case "revision":
 				e.Revision = "old"
 				s.Revision = "new"
-			case "recipient-name":
-				e.Metadata.Recipients[0].Name = "Other"
+			case "recipient-name-invalid":
+				e.Metadata.Recipients[0].Name = "\xff"
 			case "recipient-order":
 				e.Metadata.Recipients = append(e.Metadata.Recipients, mailbox.Address{Address: "second@example.org", Name: "Second"})
 				s.Metadata.Recipients = []mailbox.Address{e.Metadata.Recipients[1], s.Metadata.Recipients[0]}
@@ -157,7 +157,7 @@ func TestReconciliationSenderAuthorityFinalTransaction(t *testing.T) {
 					Source, Coverage string
 					Folders          map[string]mailbox.CollectionRef
 					Items            []LegacyReconciliationItem
-				}{"mailpipe-legacy-reconciliation-v6", r.Account, r.SourceDigest, r.Coverage, r.Folders, r.Items})
+				}{"mailpipe-legacy-reconciliation-v7", r.Account, r.SourceDigest, r.Coverage, r.Folders, r.Items})
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -240,7 +240,7 @@ func TestReconciliationSenderAuthorityPreservesCompleteHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	read, found, err := ReadLegacyReconciliationReceipt(ctx, path, a)
-	if err != nil || !found || read.Version != 6 || read.Digest != r.Digest || !read.Items[0].SenderAddressDisagrees || read.Items[0].SenderCasingChanged {
-		t.Fatal("v6 offline receipt lost flags", err)
+	if err != nil || !found || read.Version != 7 || read.Digest != r.Digest || !read.Items[0].SenderAddressDisagrees || read.Items[0].SenderCasingChanged {
+		t.Fatal("current offline receipt lost flags", err)
 	}
 }

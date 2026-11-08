@@ -276,11 +276,11 @@ func reconciliationOutput(agent *agentio.AgentIO, status string, r store.LegacyR
 			"coverage": r.Coverage, "started": r.Started.Format(time.RFC3339Nano), "finished": r.Finished.Format(time.RFC3339Nano), "pages": r.Pages, "observed": r.Observed,
 			"n": i.N, "disposition": i.Disposition, "original_id": i.OriginalID, "reason": i.Reason, "original_removed": i.Removed,
 			"original_folder": i.OriginalFolder, "original_memberships": nested["original_memberships"], "membership_changed": i.MembershipChanged, "state": nested["state"],
-			"enumerated_state": nested["enumerated_state"], "recipient_casing_changed": i.RecipientCasingChanged, "sender_casing_changed": i.SenderCasingChanged, "sender_name_changed": i.SenderNameChanged, "sender_address_disagrees": i.SenderAddressDisagrees,
+			"enumerated_state": nested["enumerated_state"], "recipient_name_changed": i.RecipientNameChanged, "recipient_casing_changed": i.RecipientCasingChanged, "sender_casing_changed": i.SenderCasingChanged, "sender_name_changed": i.SenderNameChanged, "sender_address_disagrees": i.SenderAddressDisagrees,
 			"history_confirmed": r.HistoricalAttributionConfirmed, "backup": r.Backup, "backup_digest": r.BackupDigest,
 		})
 	}
-	header := []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "state", "recipient_casing_changed", "sender_casing_changed", "sender_name_changed", "sender_address_disagrees", "enumerated_state", "verified", "unavailable", "historical"}
+	header := []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "state", "recipient_name_changed", "recipient_casing_changed", "sender_casing_changed", "sender_name_changed", "sender_address_disagrees", "enumerated_state", "verified", "unavailable", "historical"}
 	return agentio.Tabled(agent, header, rows, func(row map[string]any) []string {
 		values := make([]string, len(header))
 		for j, key := range header {
@@ -420,7 +420,7 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 					return senderDiagnosticClosureFailure(nil, err)
 				}
 			}
-			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition, old-to-current membership change, sender-address disagreement, address casing pair and sender display-name pair, and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
+			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition, old-to-current membership change, sender-address disagreement, address casing pair and sender/recipient display-name pair, and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
 		}
 		return reconciliationOutput(agent, status, verifier.report)
 	})

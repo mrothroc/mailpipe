@@ -87,11 +87,11 @@ func TestReconciliationSenderUnicodeAndStrictMetadata(t *testing.T) {
 			}
 		})
 	}
-	for _, field := range []string{"recipient-name", "order", "subject", "header", "membership", "revision", "id"} {
+	for _, field := range []string{"recipient-name-and-preview", "order", "subject", "header", "membership", "revision", "id"} {
 		t.Run(field, func(t *testing.T) {
 			before := []mailbox.Address{{Address: "a@example.org", Name: "A"}, {Address: "b@example.org", Name: "B"}}
 			after := append([]mailbox.Address(nil), before...)
-			if field == "recipient-name" {
+			if field == "recipient-name-and-preview" {
 				after[0].Name = "a"
 			}
 			if field == "order" {
@@ -100,6 +100,8 @@ func TestReconciliationSenderUnicodeAndStrictMetadata(t *testing.T) {
 			proof, err := collectCasing(t, before, after, func(m map[string]any) {
 				m["sender"] = map[string]any{"emailAddress": map[string]string{"address": "SENDER@example.org"}}
 				switch field {
+				case "recipient-name-and-preview":
+					m["bodyPreview"] = "Changed"
 				case "subject":
 					m["subject"] = "Changed"
 				case "header":

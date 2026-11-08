@@ -110,14 +110,15 @@ func TestReconciliationRecipientCasing(t *testing.T) {
 
 func TestReconciliationCasingDoesNotMaskOtherChanges(t *testing.T) {
 	base := []mailbox.Address{{Address: "First@Example.org", Name: "First"}, {Address: "second@example.org", Name: "Second"}}
-	for _, kind := range []string{"name", "order", "cardinality", "multiplicity", "trim", "plus", "dot", "different", "full-fold", "normalization", "subject", "preview", "received", "sender-content", "header", "read", "attachments", "membership", "revision", "id"} {
+	for _, kind := range []string{"name-and-preview", "order", "cardinality", "multiplicity", "trim", "plus", "dot", "different", "full-fold", "normalization", "subject", "preview", "received", "sender-content", "header", "read", "attachments", "membership", "revision", "id"} {
 		t.Run(kind, func(t *testing.T) {
 			after := append([]mailbox.Address(nil), base...)
 			after[0].Address = "first@example.org"
 			change := func(m map[string]any) {}
 			switch kind {
-			case "name":
+			case "name-and-preview":
 				after[0].Name = "FIRST"
+				change = func(m map[string]any) { m["bodyPreview"] = "Changed" }
 			case "order":
 				after[0], after[1] = after[1], after[0]
 			case "cardinality":
