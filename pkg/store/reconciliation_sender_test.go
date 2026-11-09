@@ -28,8 +28,8 @@ func TestReconciliationSenderPairReview(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sender pair rejected: %v", err)
 			}
-			if r.Version != 7 {
-				t.Fatal("new proposal must use v7")
+			if r.Version != 8 {
+				t.Fatal("new proposal must use v8")
 			}
 			raw, _ := json.Marshal(r.Items[0])
 			var item struct {
@@ -154,15 +154,17 @@ func TestReconciliationSenderPairValidationAndRawDigest(t *testing.T) {
 			}
 			states[n] = s
 			r, err := ReviewLegacyReconciliation(a, p, x)
-			if err != nil || r.Digest == base.Digest {
-				t.Fatal("raw sender spelling missing from R", err)
+			if err != nil || (r.Digest == base.Digest) != (side == "enumeration") || r.AuditDigest == base.AuditDigest {
+				t.Fatal("approval/audit sensitivity incorrect", err)
 			}
-			b, err := ReconcileLegacy(context.Background(), path, a, p, base.Digest, reconcileLegacyFunc(func(context.Context, mailbox.Account, LegacyPreparation) (LegacyReconciliation, error) { return x, nil }))
-			if b != nil {
-				b.Close()
-			}
-			if !errors.Is(err, mailbox.ErrStaleIdentity) {
-				t.Fatal("old R accepted changed sender spelling", err)
+			if side == "inspection" {
+				b, err := ReconcileLegacy(context.Background(), path, a, p, base.Digest, reconcileLegacyFunc(func(context.Context, mailbox.Account, LegacyPreparation) (LegacyReconciliation, error) { return x, nil }))
+				if b != nil {
+					b.Close()
+				}
+				if !errors.Is(err, mailbox.ErrStaleIdentity) {
+					t.Fatal("old R accepted changed sender spelling", err)
+				}
 			}
 		})
 	}
@@ -170,7 +172,7 @@ func TestReconciliationSenderPairValidationAndRawDigest(t *testing.T) {
 	s := v.EnumeratedStates[n]
 	s.Metadata.Sender.Address = "mutated@example.org"
 	v.EnumeratedStates[n] = s
-	if r, err := ReviewLegacyReconciliation(a, p, owned); err != nil || r.Digest != base.Digest || base.Items[0].EnumeratedState.Metadata.Sender.Address == "mutated@example.org" {
+	if r, err := ReviewLegacyReconciliation(a, p, owned); err != nil || r.Digest != base.Digest || r.AuditDigest != base.AuditDigest || base.Items[0].EnumeratedState.Metadata.Sender.Address == "mutated@example.org" {
 		t.Fatal("owned sender pair aliases provider", err)
 	}
 }

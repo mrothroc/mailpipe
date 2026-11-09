@@ -78,8 +78,8 @@ func TestReconciliationV6FrozenShape(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if string(retained) != string(frozen) || string(current) == string(frozen) || r.Version != 7 || r.Digest == reconciliationV6Digest(t, r) {
-			t.Fatal("frozen v6 shape or v7 domain separation changed")
+		if string(retained) != string(frozen) || string(current) == string(frozen) || r.Version != 8 || r.Digest == reconciliationV6Digest(t, r) {
+			t.Fatal("frozen v6 shape or current domain separation changed")
 		}
 	}
 }

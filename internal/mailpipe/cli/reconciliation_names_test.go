@@ -87,7 +87,7 @@ func TestReconcileSenderNameReview(t *testing.T) {
 			}
 			rows := reconciliationRows(t, out)
 			item := rows[1]
-			if item["sender_name_changed"] != true || item["sender_casing_changed"] != combined || item["recipient_casing_changed"] != combined || rows[0]["version"] != float64(7) {
+			if item["sender_name_changed"] != true || item["sender_casing_changed"] != combined || item["recipient_casing_changed"] != combined || rows[0]["version"] != float64(8) {
 				t.Fatal("presentation flags/version not derived independently")
 			}
 			if g.pages != 1 || g.batches != 1 || len(g.moved) != 0 {

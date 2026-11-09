@@ -78,9 +78,14 @@ only at corresponding positions, with valid UTF-8 for changed names; there is no
 sorting or cross-slot identity inference, including indistinguishable duplicates.
 Address casing keeps its
 existing untrimmed comparison. Both exact observations are retained
-and included with independently derived flags in the version-7 proposal digest.
+and included with independently derived flags in the version-8 audit digest.
+The separate approval digest covers exact inspected state, identities, dispositions
+and complete history. Fresh enumeration still passes every existing check;
+already-permitted presentation changes alone do not invalidate an identical
+approval. The fresh execution audit may differ from preview, but mutation inside
+that execution's frozen evidence remains stale.
 Older pending proposals cannot authorize a new binding; committed version-1
-through version-6 receipts retain offline display and exact stored-confirmation
+through version-7 receipts retain offline display and exact stored-confirmation
 routing repair without rewriting history. Each original immutable ID is
 verified independently; matching headers
 on a different ID never replace it or transfer history. With specific owner approval,

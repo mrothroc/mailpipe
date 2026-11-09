@@ -46,7 +46,7 @@ func TestReconciliationReviewsDistinctIDsAndMembershipChanges(t *testing.T) {
 	}
 	summary := rows[0]
 	for _, row := range rows[1:] {
-		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(7) {
+		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(8) {
 			t.Fatal("incomplete original evidence", row)
 		}
 		old := row["original_memberships"].([]any)[0].(map[string]any)["Collection"].(map[string]any)["CollectionID"]
@@ -156,12 +156,53 @@ func assertCommittedV6SenderEvidence(t *testing.T, item map[string]any) {
 	}
 }
 
+// v7 additionally records recipient presentation, without changing the v6 fixture.
+type committedV7Graph struct{ *committedV6Graph }
+
+func (g *committedV7Graph) Batch(ctx context.Context, reqs []graph.BatchRequest) ([]graph.BatchResponse, error) {
+	out, err := g.committedV6Graph.Batch(ctx, reqs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		var m map[string]any
+		if err = json.Unmarshal(out[i].Body, &m); err != nil {
+			return nil, err
+		}
+		m["toRecipients"].([]any)[0].(map[string]any)["emailAddress"].(map[string]any)["name"] = "Current recipient display"
+		out[i].Body, err = json.Marshal(m)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+func assertCommittedV7Evidence(t *testing.T, item map[string]any) {
+	t.Helper()
+	for key, want := range map[string]bool{"sender_address_disagrees": true, "sender_casing_changed": false, "sender_name_changed": true, "recipient_casing_changed": true, "recipient_name_changed": true} {
+		if item[key] != want {
+			t.Fatal("v7 flags lost", key)
+		}
+	}
+	for _, side := range []struct{ key, address, name, recipient, recipientName string }{
+		{"enumerated_state", "enumerated-from@example.org", "Original Display", "To@Example.org", "Unexported Recipient"},
+		{"state", "sender@example.org", "Current Display", "to@example.org", "Current recipient display"},
+	} {
+		m := item[side.key].(map[string]any)["Metadata"].(map[string]any)
+		sender := m["Sender"].(map[string]any)
+		recipients := m["Recipients"].([]any)
+		if sender["Address"] != side.address || sender["Name"] != side.name || len(recipients) != 2 || recipients[0].(map[string]any)["Address"] != side.recipient || recipients[0].(map[string]any)["Name"] != side.recipientName {
+			t.Fatal("v7 raw observations lost")
+		}
+	}
+}
+
 func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
-	for _, version := range []int{1, 2, 3, 4, 5, 6} {
+	for _, version := range []int{1, 2, 3, 4, 5, 6, 7} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			e := newEnv(t)
 			sender := "info@campaign.example.org"
-			if version == 6 {
+			if version >= 6 {
 				sender = "sender@example.org"
 				e.graph.server = map[string]serverMsg{"g1": {"inbox", "<g1@example.org>", sender}}
 			}
@@ -173,9 +214,13 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 					t.Fatal(err)
 				}
 				g := &senderCasingGraph{casingGraph: &casingGraph{fakeGraph: e.graph, listed: "Reader@Example.org", inspected: "reader@example.org"}, sender: "INFO@CAMPAIGN.EXAMPLE.ORG"}
-				if version == 6 {
+				if version >= 6 {
 					v6 = &committedV6Graph{provenanceGraph: &provenanceGraph{senderNameGraph: &senderNameGraph{senderCasingGraph: g}}}
-					e.provider, err = graphmail.New(v6, subject.Account())
+					if version == 7 {
+						e.provider, err = graphmail.New(&committedV7Graph{v6}, subject.Account())
+					} else {
+						e.provider, err = graphmail.New(v6, subject.Account())
+					}
 				} else if version >= 5 {
 					e.provider, err = graphmail.New(&senderNameGraph{senderCasingGraph: g, name: "Current Display"}, subject.Account())
 				} else {
@@ -191,7 +236,7 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			}
 			summary := reconciliationRows(t, out)[0]
 			args := []string{"account", "reconcile", "--execute", "--confirm-account", summary["account"].(string), "--confirm-history", summary["source_digest"].(string), "--confirm-reconciliation", summary["reconciliation_digest"].(string)}
-			if version == 6 {
+			if version >= 6 {
 				args = append([]string{"account", "reconcile", "--json"}, args[2:]...)
 			}
 			if code, _, stderr = e.run(args...); code != 0 {
@@ -211,6 +256,7 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if err = json.Unmarshal([]byte(raw), &receipt); err != nil {
 				t.Fatal(err)
 			}
+			delete(receipt, "audit_digest")
 			receipt["version"], receipt["reconciliation_digest"] = version, "stored-old-proposal"
 			encoded, err := json.Marshal(receipt)
 			if err != nil {
@@ -227,7 +273,10 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if err = json.Unmarshal([]byte(item), &oldItem); err != nil {
 				t.Fatal(err)
 			}
-			keys := []string{"recipient_name_changed"}
+			keys := []string{}
+			if version < 7 {
+				keys = append(keys, "recipient_name_changed")
+			}
 			if version < 6 {
 				keys = append(keys, "sender_address_disagrees")
 			}
@@ -254,9 +303,13 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 				t.Fatal(err)
 			}
 			frozenItem := string(encoded)
-			if version == 6 {
-				assertCommittedV6SenderEvidence(t, oldItem)
-				if _, found := oldItem["recipient_name_changed"]; found {
+			if version >= 6 {
+				if version == 7 {
+					assertCommittedV7Evidence(t, oldItem)
+				} else {
+					assertCommittedV6SenderEvidence(t, oldItem)
+				}
+				if _, found := oldItem["recipient_name_changed"]; found && version < 7 {
 					t.Fatal("new flag entered frozen v6 item")
 				}
 			}
@@ -275,11 +328,18 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || reconciliationRows(t, out)[0]["version"] != float64(version) {
 				t.Fatalf("old receipt requires auth: %d %s", code, stderr)
 			}
-			if version == 6 {
-				assertCommittedV6SenderEvidence(t, reconciliationRows(t, out)[1])
+			if version >= 6 {
+				if version == 7 {
+					assertCommittedV7Evidence(t, reconciliationRows(t, out)[1])
+				} else {
+					assertCommittedV6SenderEvidence(t, reconciliationRows(t, out)[1])
+				}
 				if v6.pages != pages || v6.batches != batches {
 					t.Fatal("offline v6 receipt performed reads")
 				}
+			}
+			if reconciliationRows(t, out)[0]["audit_digest"] != "" {
+				t.Fatal("old receipt acquired a new audit identity")
 			}
 			e.auth.signedIn = true
 			cfg, err := config.Load(config.DefaultPath())
@@ -298,8 +358,12 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if code, out, stderr = e.run(args...); code != 0 {
 				t.Fatalf("v1 routing repair replayed binding: %d %s", code, stderr)
 			}
-			if version == 6 {
-				assertCommittedV6SenderEvidence(t, reconciliationRows(t, out)[1])
+			if version >= 6 {
+				if version == 7 {
+					assertCommittedV7Evidence(t, reconciliationRows(t, out)[1])
+				} else {
+					assertCommittedV6SenderEvidence(t, reconciliationRows(t, out)[1])
+				}
 				if v6.pages != pages || v6.batches != batches || v6.bodyCalls.Load() != 0 || v6.rawCalls.Load() != 0 {
 					t.Fatal("v6 receipt repair read mailbox/content")
 				}
@@ -329,13 +393,17 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if version >= 4 && version < 6 && (!strings.Contains(afterItem, `"sender_casing_changed":true`) || !strings.Contains(afterItem, `"recipient_casing_changed":true`) || !strings.Contains(afterItem, "Reader@Example.org")) {
 				t.Fatal("v4 raw address pair lost")
 			}
-			if version == 6 {
+			if version >= 6 {
 				var saved map[string]any
 				if err = json.Unmarshal([]byte(afterItem), &saved); err != nil {
 					t.Fatal(err)
 				}
-				assertCommittedV6SenderEvidence(t, saved)
-				if _, found := saved["recipient_name_changed"]; found {
+				if version == 7 {
+					assertCommittedV7Evidence(t, saved)
+				} else {
+					assertCommittedV6SenderEvidence(t, saved)
+				}
+				if _, found := saved["recipient_name_changed"]; found && version < 7 {
 					t.Fatal("stored v6 item acquired new semantics")
 				}
 			}

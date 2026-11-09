@@ -38,8 +38,8 @@ func TestReconciliationSenderNamePair(t *testing.T) {
 			if err = json.Unmarshal(raw, &flags); err != nil {
 				t.Fatal(err)
 			}
-			if r.Version != 7 || flags["sender_name_changed"] != true || flags["sender_casing_changed"] != combined || flags["recipient_casing_changed"] != combined {
-				t.Fatal("flags or v7 not derived")
+			if r.Version != 8 || flags["sender_name_changed"] != true || flags["sender_casing_changed"] != combined || flags["recipient_casing_changed"] != combined {
+				t.Fatal("flags or v8 not derived")
 			}
 			if r.Items[0].EnumeratedState.Metadata.Sender.Name != e.Metadata.Sender.Name || r.Items[0].State.Metadata.Sender.Name != s.Metadata.Sender.Name {
 				t.Fatal("raw names lost")
@@ -96,15 +96,17 @@ func TestReconciliationSenderNameRawDigestAndEncoding(t *testing.T) {
 			s.Metadata.Sender.Name = "Changed Display"
 			states[n] = s
 			r, err := ReviewLegacyReconciliation(a, p, x)
-			if err != nil || r.Digest == base.Digest {
-				t.Fatal("raw name not bound into R", err)
+			if err != nil || (r.Digest == base.Digest) != (side == "enumerated") || r.AuditDigest == base.AuditDigest {
+				t.Fatal("approval/audit sensitivity incorrect", err)
 			}
-			b, err := ReconcileLegacy(context.Background(), path, a, p, base.Digest, reconcileLegacyFunc(func(context.Context, mailbox.Account, LegacyPreparation) (LegacyReconciliation, error) { return x, nil }))
-			if b != nil {
-				b.Close()
-			}
-			if !errors.Is(err, mailbox.ErrStaleIdentity) {
-				t.Fatal("changed permitted name reused confirmation", err)
+			if side == "inspection" {
+				b, err := ReconcileLegacy(context.Background(), path, a, p, base.Digest, reconcileLegacyFunc(func(context.Context, mailbox.Account, LegacyPreparation) (LegacyReconciliation, error) { return x, nil }))
+				if b != nil {
+					b.Close()
+				}
+				if !errors.Is(err, mailbox.ErrStaleIdentity) {
+					t.Fatal("changed permitted name reused confirmation", err)
+				}
 			}
 			s.Metadata.Sender.Name = string([]byte{0xff})
 			states[n] = s
@@ -117,7 +119,7 @@ func TestReconciliationSenderNameRawDigestAndEncoding(t *testing.T) {
 	e = v.EnumeratedStates[n]
 	e.Metadata.Sender.Name = "Mutated"
 	v.EnumeratedStates[n] = e
-	if r, err := ReviewLegacyReconciliation(a, p, owned); err != nil || r.Digest != base.Digest || base.Items[0].EnumeratedState.Metadata.Sender.Name != "Before Display" {
+	if r, err := ReviewLegacyReconciliation(a, p, owned); err != nil || r.Digest != base.Digest || r.AuditDigest != base.AuditDigest || base.Items[0].EnumeratedState.Metadata.Sender.Name != "Before Display" {
 		t.Fatal("raw name snapshot aliases verifier", err)
 	}
 	// Identical name encodings retain the prior address-only behavior.

@@ -22,7 +22,8 @@ not bind history, save routing, publish sync observations or change server mail.
 It inventories the complete database, enumerates current primary-mailbox metadata,
 and inspects every original live immutable reference. It fetches no bodies.
 
-Review the immutable account, complete history digest, reconciliation digest,
+Review the immutable account, complete history digest, reconciliation approval
+digest, separate observation audit digest,
 coverage and observation times, counts, and **every message disposition**:
 
 - `verified`: the exact original immutable ID, locator, header identity and
@@ -64,9 +65,14 @@ specific approval for local attribution:
 mailpipe account reconcile --execute --confirm-account <account> --confirm-history <history-digest> --confirm-reconciliation <reconciliation-digest>
 ```
 
-Use the exact reviewed values. Execute regenerates the evidence under exclusive
-lifecycle ownership; a changed inventory or proposal requires a new preview and
-review. An editable report cannot supply remote proof. Absence, a matching sender,
+Use the exact reviewed values. For version 8, `--confirm-reconciliation` accepts
+the stable `reconciliation_digest`, never `audit_digest`. Execute regenerates and
+validates all evidence under exclusive lifecycle ownership. A changed inventory
+or inspected approval input requires a new preview and review. Already-permitted
+enumeration presentation differences may produce a fresh audit while approval
+stays identical. The CLI has no prior audit input and does not claim to detect
+that difference. Within one execution, both digests must match its frozen owned
+snapshot at final transaction review. An editable report cannot supply remote proof. Absence, a matching sender,
 message content, and a successful sign-in do not establish historical ownership.
 At least one original live immutable reference must verify before newly
 unavailable references can be accepted as owner-confirmed history.
@@ -74,7 +80,7 @@ unavailable references can be accepted as owner-confirmed history.
 ## Results and limits
 
 A completed reconciliation permanently binds the existing mirror and records an
-atomic receipt with the source/proposal digests, verified backup, coverage,
+atomic receipt with the source/approval/audit digests, verified backup, coverage,
 confirmations and per-message dispositions. All original message numbers, Graph
 IDs, legacy columns, bodies, verdicts, filing provenance, plans and action IDs
 remain. Unavailable rows have no current membership and are excluded from active
@@ -269,19 +275,29 @@ equivalence or permission to replace original history. All unrelated metadata,
 recipient address positions/shape/multiplicity, current memberships and recorded
 revisions remain strict. Default collection retains only integrity stamps, not raw source traces.
 
-New proposals and receipts use JSON version 7 and digest domain
-`mailpipe-legacy-reconciliation-v7`.
-The proposal covers original and current membership evidence for every live
-original, plus both exact observations and derived flags for accepted
-sender disagreements, address-casing or sender/recipient-name differences,
-alongside the account, complete source digest, folder mappings and all dispositions.
-Changing either raw observation changes the proposal digest even when the
-relationship remains permitted. A version-1 through version-6 pending proposal
-cannot execute a new binding, even without differences; obtain a fresh preview.
-Committed version-1 through version-6 receipts remain readable offline and retain
-their exact-confirmation routing-repair behavior. They are not rewritten,
-reinterpreted as new evidence or replayed through binding. See the
-[exact-ID reconciliation decision](adr/0010-exact-id-reconciliation.md).
+New proposals and receipts use JSON version 8. `reconciliation_digest` is stable
+approval under domain `mailpipe-legacy-reconciliation-approval-v8`: exact account,
+complete history digest, coverage, folder mappings, identities/dispositions,
+original memberships/change flags and the complete inspected states. Every
+inspected metadata spelling, revision and membership remains approval-bound.
+Enumeration-derived flags and optional pair presence are excluded, without
+relaxing validation of that evidence.
+
+`audit_digest`, under `mailpipe-legacy-reconciliation-audit-v8`, binds that computed
+approval context, observation times/counts and full raw items with retained pairs
+and derived flags. Missing enumeration state remains absent, never fabricated;
+metadata-equal cases retain no extra enumerated state. This is not a new
+all-record raw capture. Review the
+complete current report, including private overflow. An audit identifies untrusted
+observations and cannot grant approval. Invalid evidence produces neither digest.
+
+A version-1 through version-7 pending proposal cannot execute new binding, even
+without differences; obtain a fresh preview. Committed version-1 through version-7
+receipts remain readable offline and retain exact STORED-confirmation routing
+repair, without rehashing/reinterpreting or rewriting receipt/item bytes. They
+have no invented audit digest. See [approval and audit](adr/0011-reconciliation-approval-audit-digests.md)
+for the precise separation and [exact-ID reconciliation](adr/0010-exact-id-reconciliation.md)
+for unchanged admission/history boundaries.
 
 Older saved first-conflict diagnostic reports describe an incomplete observation,
 not a proposal. Their bounded original/observed fields and omission counts are

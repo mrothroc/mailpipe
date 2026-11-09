@@ -272,7 +272,7 @@ func reconciliationOutput(agent *agentio.AgentIO, status string, r store.LegacyR
 		}
 		rows = append(rows, map[string]any{
 			"verified": counts["verified"], "unavailable": counts["unavailable"], "historical": counts["historical"], "status": status,
-			"version": r.Version, "account": string(r.Account.ID), "provider": string(r.Account.ProviderID), "source_digest": r.SourceDigest, "reconciliation_digest": r.Digest,
+			"version": r.Version, "account": string(r.Account.ID), "provider": string(r.Account.ProviderID), "source_digest": r.SourceDigest, "reconciliation_digest": r.Digest, "audit_digest": r.AuditDigest,
 			"coverage": r.Coverage, "started": r.Started.Format(time.RFC3339Nano), "finished": r.Finished.Format(time.RFC3339Nano), "pages": r.Pages, "observed": r.Observed,
 			"n": i.N, "disposition": i.Disposition, "original_id": i.OriginalID, "reason": i.Reason, "original_removed": i.Removed,
 			"original_folder": i.OriginalFolder, "original_memberships": nested["original_memberships"], "membership_changed": i.MembershipChanged, "state": nested["state"],
@@ -280,7 +280,7 @@ func reconciliationOutput(agent *agentio.AgentIO, status string, r store.LegacyR
 			"history_confirmed": r.HistoricalAttributionConfirmed, "backup": r.Backup, "backup_digest": r.BackupDigest,
 		})
 	}
-	header := []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "state", "recipient_name_changed", "recipient_casing_changed", "sender_casing_changed", "sender_name_changed", "sender_address_disagrees", "enumerated_state", "verified", "unavailable", "historical"}
+	header := []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "audit_digest", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "state", "recipient_name_changed", "recipient_casing_changed", "sender_casing_changed", "sender_name_changed", "sender_address_disagrees", "enumerated_state", "verified", "unavailable", "historical"}
 	return agentio.Tabled(agent, header, rows, func(row map[string]any) []string {
 		values := make([]string, len(header))
 		for j, key := range header {
@@ -407,6 +407,7 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 			if e = saveReconciliationRouting(ctx, deps, cfg, p, receipt); e != nil {
 				return e
 			}
+			fmt.Fprintln(agent.Stderr(), "[hint] reviewed approval matched; audit_digest records the fresh execution observations and may differ from preview")
 			status = "bound"
 		} else {
 			if _, e = verifier.ReconcileLegacy(ctx, p.Account(), prep); e != nil {
@@ -420,15 +421,16 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 					return senderDiagnosticClosureFailure(nil, err)
 				}
 			}
+			fmt.Fprintln(agent.Stderr(), "[hint] reconciliation_digest identifies the inspected-state/history proposal to approve; audit_digest identifies this run's raw observations only. A fresh execution audit may differ from preview; it cannot authorize attribution")
 			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition, old-to-current membership change, sender-address disagreement, address casing pair and sender/recipient display-name pair, and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
 		}
 		return reconciliationOutput(agent, status, verifier.report)
 	})
 	cmd.Flags().String("sender-address-diagnostic-out", "", "write a sender-address observation to a new owner-private file (preview only; no proof)")
 	cmd.Flags().String("sender-address-diagnostic-n", "", "select one original observation, without admission or historical validation; requires diagnostic-out; always exits runtime 1, even when saved")
-	cmd.Flags().Bool("execute", false, "bind only the freshly regenerated owner-reviewed reconciliation")
+	cmd.Flags().Bool("execute", false, "bind only fresh validated evidence matching the reviewed approval; audit is regenerated")
 	cmd.Flags().String("confirm-account", "", "exact reviewed immutable account")
 	cmd.Flags().String("confirm-history", "", "exact reviewed complete historical inventory digest")
-	cmd.Flags().String("confirm-reconciliation", "", "exact reviewed reconciliation proposal digest")
+	cmd.Flags().String("confirm-reconciliation", "", "exact reviewed reconciliation approval digest (not audit_digest)")
 	return cmd
 }
