@@ -50,10 +50,7 @@ func reconciliationV5Digest(t *testing.T, r LegacyReconciliationReceipt) string 
 }
 func TestReconciliationV5FrozenShape(t *testing.T) {
 	_, a, p, v := casingPreparation(t)
-	r, err := ReviewLegacyReconciliation(a, p, v)
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := frozenV8Fixture(t, a, p, v)
 	current, err := json.Marshal(r.Items)
 	if err != nil {
 		t.Fatal(err)

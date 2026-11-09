@@ -39,12 +39,12 @@ func TestReconciliationReviewsMovedMembership(t *testing.T) {
 		t.Fatal("strict binding accepted changed collection")
 	}
 	now := time.Now().UTC()
-	evidence := LegacyReconciliation{Verification: proof, Coverage: LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1, Observed: len(proof.States)}
+	evidence := referenceFixture(a, p, LegacyReconciliation{Verification: proof, Started: now, Finished: now})
 	r, err := ReviewLegacyReconciliation(a, p, evidence)
 	if err != nil {
 		t.Fatalf("reviewable exact-ID collection change blocked: %v", err)
 	}
-	if r.Version != 8 {
+	if r.Version != 9 {
 		t.Fatalf("membership proposal has version %d", r.Version)
 	}
 	raw, _ := json.Marshal(r.Items[0])
@@ -122,7 +122,7 @@ func TestReconciliationMembershipDigestAndValidation(t *testing.T) {
 	a := mailbox.Account{ID: "invented-account", ProviderID: GraphProvider}
 	makeEvidence := func() LegacyReconciliation {
 		now := time.Now().UTC()
-		return LegacyReconciliation{Verification: goodLegacyProof(a, p), Coverage: LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1, Observed: len(p.Live)}
+		return referenceFixture(a, p, LegacyReconciliation{Verification: goodLegacyProof(a, p), Started: now, Finished: now})
 	}
 	base, err := ReviewLegacyReconciliation(a, p, makeEvidence())
 	if err != nil {
@@ -152,6 +152,11 @@ func TestReconciliationMembershipDigestAndValidation(t *testing.T) {
 				state.Memberships = append(state.Memberships, mailbox.Membership{Collection: mailbox.CollectionRef{AccountID: a.ID, CollectionID: "second"}})
 			}
 			e.Verification.States[n] = state
+			e.ReferenceContext.StateBytes = 0
+			for _, current := range e.Verification.States {
+				raw, _ := json.Marshal(current)
+				e.ReferenceContext.StateBytes += int64(len(raw))
+			}
 			r, err := ReviewLegacyReconciliation(a, p, e)
 			invalid := kind == "cross-account" || kind == "duplicate" || kind == "zero" || kind == "multiple"
 			if invalid {
@@ -200,10 +205,7 @@ func TestReconciliationV1StoredReceiptRemainsReadable(t *testing.T) {
 	a := mailbox.Account{ID: "invented-account", ProviderID: GraphProvider}
 	v := goodLegacyProof(a, p)
 	now := time.Now().UTC()
-	r, err := ReviewLegacyReconciliation(a, p, LegacyReconciliation{Verification: v, Coverage: LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1, Observed: len(v.States)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := frozenV8Fixture(t, a, p, LegacyReconciliation{Verification: v, Started: now, Finished: now})
 	r.Version = 1
 	r.Digest = reconciliationV1Digest(t, r)
 	oldItems := reconciliationV1Items(r)

@@ -1,5 +1,9 @@
 # Reconciliation approval and observation audit
 
+New attribution now follows [ADR 0012](0012-reference-scoped-reconciliation.md).
+The enumeration/pair rules below describe older receipts and retained private
+diagnostics, not the current default acquisition policy.
+
 Status: accepted. Supersedes only the raw-observation contribution to approval
 identity in [ADR 0010](0010-exact-id-reconciliation.md). Its admission, identity,
 history and action boundaries remain in force.

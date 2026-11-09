@@ -69,7 +69,7 @@ func TestReconciliationFailurePreservesCausesWithoutRenderingThem(t *testing.T) 
 type reconciliationVerifierProvider struct {
 	mailbox.Provider
 	account                  mailbox.Account
-	evidence                 graphmail.LegacyEvidence
+	evidence                 graphmail.ReferenceEvidence
 	resolveError, collectErr error
 	collectorCalls           int
 }
@@ -78,12 +78,19 @@ func (p *reconciliationVerifierProvider) Account() mailbox.Account { return p.ac
 func (p *reconciliationVerifierProvider) Resolve(context.Context, string) (mailbox.Collection, error) {
 	return mailbox.Collection{Ref: mailbox.CollectionRef{AccountID: p.account.ID, CollectionID: "inbox"}}, p.resolveError
 }
-func (p *reconciliationVerifierProvider) ReconcileLegacyReferences(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error) {
+func (p *reconciliationVerifierProvider) ReconcileOriginalReferences(context.Context, []graphmail.LegacyReference) (graphmail.ReferenceEvidence, error) {
 	p.collectorCalls++
 	return p.evidence, p.collectErr
 }
 
 type unsupportedReconciliationProvider struct{ mailbox.Provider }
+
+// A legacy-only reader must not become an implicit fallback capability.
+type legacyOnlyReconciliationProvider struct{ mailbox.Provider }
+
+func (legacyOnlyReconciliationProvider) ReconcileLegacyReferences(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error) {
+	panic("legacy fallback invoked")
+}
 
 // The embedded base supplies Account, but this method set has no collector.
 func TestReconciliationVerifierFailuresReturnZeroProofAndReport(t *testing.T) {
@@ -104,7 +111,7 @@ func TestReconciliationVerifierFailuresReturnZeroProofAndReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"account", "unsupported", "resolve-404", "resolve-read", "collector", "diagnostic-unsupported", "review"} {
+	for _, kind := range []string{"account", "unsupported", "legacy-only", "resolve-404", "resolve-read", "collector", "diagnostic-unsupported", "review"} {
 		t.Run(kind, func(t *testing.T) {
 			cause := errors.New("invented-read-failure")
 			p := &reconciliationVerifierProvider{account: a}
@@ -114,6 +121,8 @@ func TestReconciliationVerifierFailuresReturnZeroProofAndReport(t *testing.T) {
 				p.account.ID = "different-account"
 			case "unsupported":
 				provider = unsupportedReconciliationProvider{Provider: p}
+			case "legacy-only":
+				provider = legacyOnlyReconciliationProvider{Provider: p}
 			case "resolve-404":
 				p.resolveError = &graph.APIError{Status: 404, Code: "ErrorItemNotFound"}
 			case "resolve-read":
@@ -152,7 +161,7 @@ func TestReconciliationVerifierCannotReuseSuccessfulReportAfterFailure(t *testin
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	p := &reconciliationVerifierProvider{account: a, evidence: graphmail.LegacyEvidence{Started: now, Finished: now, Pages: 1}}
+	p := &reconciliationVerifierProvider{account: a, evidence: graphmail.ReferenceEvidence{Account: a, Method: graphmail.ReferenceMethod, Coverage: graphmail.ReferenceCoverage, Started: now, Finished: now, Outcomes: map[int64]graphmail.ReferenceOutcome{}}}
 	v := &reconciliationVerifier{provider: p}
 	if _, err = v.ReconcileLegacy(ctx, a, prep); err != nil || v.report.Digest == "" {
 		t.Fatalf("positive report control failed: %+v %v", v.report, err)

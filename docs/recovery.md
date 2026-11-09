@@ -63,38 +63,26 @@ session's staging or weakens lifecycle locks.
 A historical Graph mirror can require attribution before sync while strict
 `account bind` refuses a stored live reference that is now unavailable. Use
 `mailpipe account reconcile` in that same private context to preview complete
-read-only evidence and review every disposition and old-to-current membership
-change, sender-address disagreement, address casing pair and sender/recipient
-display-name pair. These are
-reviewed presentation differences on the same independently verified exact ID,
-not ownership or continuity proof. Recovery may select an inspection sender
-despite a noncase enumeration disagreement only when both source mappings are
-validated and inspection still passes the original historical sender/header
-checks. Both changed addresses must be nonempty valid UTF-8; this does not equate
-aliases or authorize replacement of historical metadata. Recipient address
-relationships, positions, nilness, cardinality, duplicate
-multiplicity and all other metadata stay strict. Reviewed name differences apply
-only at corresponding positions, with valid UTF-8 for changed names; there is no
-sorting or cross-slot identity inference, including indistinguishable duplicates.
-Address casing keeps its
-existing untrimmed comparison. Both exact observations are retained
-and included with independently derived flags in the version-8 audit digest.
-The separate approval digest covers exact inspected state, identities, dispositions
-and complete history. Fresh enumeration still passes every existing check;
-already-permitted presentation changes alone do not invalidate an identical
-approval. The fresh execution audit may differ from preview, but mutation inside
-that execution's frozen evidence remains stale.
-Older pending proposals cannot authorize a new binding; committed version-1
-through version-7 receipts retain offline display and exact stored-confirmation
-routing repair without rewriting history. Each original immutable ID is
-verified independently; matching headers
+read-only evidence and review every disposition, exact inspected state and
+old-to-current membership change. The default reader inspects every historical
+live immutable reference without unrelated mailbox enumeration. Found states
+still pass original sender/header and exact account/reference checks; no sender,
+name, address or content correlation transfers identity. Version 9 approval binds
+complete inspected state, identities, dispositions, method/scope and complete
+history. A separate audit binds actual acquisition context and source-validated
+outcomes. Fresh audit may differ, but mutation within THIS execution's owned
+snapshot remains stale. No enumeration pair or presentation flags are invented.
+Pending versions 1–8 cannot authorize new binding; committed versions 1–8 retain
+byte-immutable offline display and exact stored-confirmation routing repair.
+Each original immutable ID is verified independently; matching headers
 on a different ID never replace it or transfer history. With specific owner approval,
 its execute path requires exact account, full-history and reconciliation digests.
 See [reviewed Graph reconciliation](graph-reconciliation.md) for the supported
 workflow, evidence limits, preserved history, backups and partial routing recovery.
 
-A 404 or enumeration absence does not prove ownership. Wrong accounts, ambiguous
-identities, incomplete enumeration and an inventory with no verified live anchor
+Even a recognized exact 404 means only reference inaccessibility, not ownership
+or deletion. Wrong accounts, ambiguous identities, incomplete exact reads and an
+unavailable inventory with no verified live anchor
 remain blocked. Preserve the mirror and backup; restore original evidence or
 request owner review. Do not force binding, manually mark rows removed, fabricate
 account metadata, or repeat prebinding full sync. Historical pending plans still

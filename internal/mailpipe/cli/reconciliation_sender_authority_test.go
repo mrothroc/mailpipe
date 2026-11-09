@@ -26,13 +26,13 @@ func TestReconcileInspectionSenderMatchesHistory(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("history-matching inspection blocked: %d %s", code, stderr)
 	}
-	if !strings.Contains(out, `"version":8`) || !strings.Contains(out, `"sender_address_disagrees":true`) || !strings.Contains(out, `"sender_casing_changed":false`) || !strings.Contains(out, "enumerated-from@example.org") || !strings.Contains(out, "sender@example.org") {
+	if !strings.Contains(out, `"version":9`) || strings.Contains(out, `"sender_address_disagrees"`) || strings.Contains(out, "enumerated-from@example.org") || !strings.Contains(out, "sender@example.org") {
 		t.Fatal("missing directional raw evidence/flags", out)
 	}
 	if _, found, err := store.ReadLegacyReconciliationReceipt(context.Background(), e.db, subject.Account()); err != nil || found {
 		t.Fatal("preview bound history", err)
 	}
-	if g.pages != 1 || g.batches != 1 || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {
+	if g.pages != 0 || g.batches != 1 || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {
 		t.Fatal("authority changed read/effect counts")
 	}
 }

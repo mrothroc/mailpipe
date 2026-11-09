@@ -78,10 +78,7 @@ func TestReconciliationV7FrozenShape(t *testing.T) {
 			v.EnumeratedStates = nil
 			v.SenderSourceIntegrity = nil
 		}
-		r, err := ReviewLegacyReconciliation(a, p, v)
-		if err != nil {
-			t.Fatal(err)
-		}
+		r := frozenV8Fixture(t, a, p, v)
 		actual, err := json.Marshal(r)
 		if err != nil {
 			t.Fatal(err)

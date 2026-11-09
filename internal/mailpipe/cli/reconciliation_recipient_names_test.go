@@ -11,7 +11,7 @@ import (
 	"github.com/mrothroc/mailpipe/pkg/store"
 )
 
-func TestReconcileRecipientNameReview(t *testing.T) {
+func TestReconcileExactRecipientNameReview(t *testing.T) {
 	for _, combined := range []bool{false, true} {
 		t.Run(map[bool]string{false: "name-only", true: "combined"}[combined], func(t *testing.T) {
 			e := newEnv(t)
@@ -42,10 +42,10 @@ func TestReconcileRecipientNameReview(t *testing.T) {
 			}
 			rows := reconciliationRows(t, out)
 			item := rows[1]
-			if item["recipient_name_changed"] != true || item["recipient_casing_changed"] != combined || item["sender_casing_changed"] != combined || item["sender_name_changed"] != combined || rows[0]["version"] != float64(8) {
+			if item["recipient_name_changed"] != nil || item["recipient_casing_changed"] != nil || item["sender_casing_changed"] != nil || item["sender_name_changed"] != nil || rows[0]["version"] != float64(9) {
 				t.Fatal("name/address flags or v7 not independently derived")
 			}
-			if g.pages != 1 || g.batches != 1 || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {
+			if g.pages != 0 || g.batches != 1 || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {
 				t.Fatal("name review changed request/action protocol")
 			}
 			legacy, err := store.Open(e.db)
@@ -73,7 +73,7 @@ func TestReconcileRecipientNameReview(t *testing.T) {
 			bound.Close()
 			e.auth.signedIn = false
 			pages, batches := g.pages, g.batches
-			if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || !strings.Contains(out, `"recipient_name_changed":true`) {
+			if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || !strings.Contains(out, `"version":9`) {
 				t.Fatalf("offline recipient-name receipt: %d %s", code, stderr)
 			}
 			if g.pages != pages || g.batches != batches || len(g.moved) != 0 {

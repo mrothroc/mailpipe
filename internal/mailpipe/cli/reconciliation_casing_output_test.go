@@ -216,3 +216,70 @@ func TestReconciliationRecipientNameOutputFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestReferenceRendererCompleteStateAndNoInventedPairs(t *testing.T) {
+	NewRootCommand(Deps{})
+	const secret = "invented-reference-render-secret"
+	agentio.RegisterSecret(secret)
+	for _, jsonMode := range []bool{false, true} {
+		t.Run(fmt.Sprint(jsonMode), func(t *testing.T) {
+			var out, stderr bytes.Buffer
+			dir := t.TempDir()
+			agent := agentio.New("account reconcile", agentio.WithJSON(jsonMode), agentio.WithStdout(&out), agentio.WithStderr(&stderr), agentio.WithOverflowDir(dir), agentio.WithLimit(1))
+			ref := mailbox.MessageRef{AccountID: "invented-account", MessageID: "original", Locator: "original"}
+			state := mailbox.State{Ref: ref, Metadata: mailbox.Metadata{Sender: mailbox.Address{Address: "sender@example.org", Name: strings.Repeat("名", 4096) + secret + "\x1b\u202e"}}}
+			for i := 0; i < 64; i++ {
+				state.Metadata.Recipients = append(state.Metadata.Recipients, mailbox.Address{Address: fmt.Sprintf("reader%d@example.org", i), Name: strings.Repeat("受", 4096) + secret + "\x1b\u202e"})
+			}
+			receipt := store.LegacyReconciliationReceipt{Version: 9, Method: store.LegacyReferenceMethod, Coverage: store.LegacyReferenceCoverage, Digest: "approval-example", AuditDigest: "audit-example", ReferenceContext: &store.LegacyReferenceContext{RequestedReferences: 1, CompletedReferences: 1, InspectionBatches: 1, StateBytes: 123}, Items: []store.LegacyReconciliationItem{{N: 9007199254740993, OriginalID: "original", Disposition: "verified", ReadRef: &ref, ReadOutcome: store.LegacyReferenceFound, SourceValidated: true, State: &state}}}
+			if err := reconciliationOutput(agent, "review", receipt); err != nil {
+				t.Fatal(err)
+			}
+			files, err := os.ReadDir(dir)
+			if err != nil || len(files) != 1 {
+				t.Fatal("missing complete overflow", err)
+			}
+			path := filepath.Join(dir, files[0].Name())
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil || info.Mode().Perm() != 0600 {
+				t.Fatal("unsafe overflow", err)
+			}
+			if strings.Contains(out.String()+stderr.String()+string(raw), secret) || strings.ContainsAny(out.String()+stderr.String(), "\x1b\u202e") {
+				t.Fatal("unsafe nested output")
+			}
+			for _, key := range []string{"enumerated_state", "sender_casing_changed", "sender_address_disagrees", "recipient_name_changed", "pages", "observed"} {
+				if strings.Contains(string(raw), key) {
+					t.Fatal("invented legacy evidence", key)
+				}
+			}
+			for _, value := range []string{"9007199254740993", "reader63@example.org", strings.Repeat("名", 4096), strings.Repeat("受", 4096), "read_ref", "read_outcome", "source_validated", "requested_references", "inspection_batches", "approval-example", "audit-example"} {
+				if !strings.Contains(string(raw), value) {
+					t.Fatal("complete state/context lost", value)
+				}
+			}
+			lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			var row map[string]any
+			if jsonMode {
+				if err = json.Unmarshal([]byte(lines[len(lines)-1]), &row); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				headers, cells := strings.Split(lines[0], "\t"), strings.Split(lines[len(lines)-1], "\t")
+				if len(headers) != len(cells) {
+					t.Fatal("TSV shape")
+				}
+				row = map[string]any{}
+				for i, k := range headers {
+					row[k] = cells[i]
+				}
+				if row["read_outcome"] != "found" || row["source_validated"] != "true" {
+					t.Fatal("TSV outcome missing")
+				}
+			}
+		})
+	}
+}

@@ -19,7 +19,7 @@ func (f reconcileLegacyFunc) ReconcileLegacy(ctx context.Context, a mailbox.Acco
 func reconciliationProof(a mailbox.Account, p LegacyPreparation) LegacyReconciliation {
 	v := goodLegacyProof(a, p)
 	delete(v.States, 7)
-	return LegacyReconciliation{Verification: v, Unavailable: map[int64]string{7: LegacyUnavailable}, Coverage: LegacyPrimaryMailbox, Started: time.Now().UTC(), Finished: time.Now().UTC(), Pages: 1, Observed: len(v.States)}
+	return referenceFixture(a, p, LegacyReconciliation{Verification: v, Unavailable: map[int64]string{7: LegacyUnavailable}, Started: time.Now().UTC(), Finished: time.Now().UTC()})
 }
 
 func TestReconciliationRejectsIncompleteAuthority(t *testing.T) {
@@ -222,7 +222,7 @@ func TestReconciliationTransactionFailuresRollBack(t *testing.T) {
 			a := mailbox.Account{ID: "invented-account", ProviderID: GraphProvider}
 			proof := goodLegacyProof(a, p)
 			now := time.Now().UTC()
-			evidence := LegacyReconciliation{Verification: proof, Unavailable: map[int64]string{}, Coverage: LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1, Observed: len(proof.States)}
+			evidence := referenceFixture(a, p, LegacyReconciliation{Verification: proof, Unavailable: map[int64]string{}, Started: now, Finished: now})
 			receipt, e := ReviewLegacyReconciliation(a, p, evidence)
 			if e != nil {
 				t.Fatal(e)
@@ -267,7 +267,7 @@ func TestReconciliationPreparationAndLifecycleGuards(t *testing.T) {
 	a := mailbox.Account{ID: "invented-account", ProviderID: GraphProvider}
 	verifier := reconcileLegacyFunc(func(_ context.Context, a mailbox.Account, p LegacyPreparation) (LegacyReconciliation, error) {
 		now := time.Now().UTC()
-		return LegacyReconciliation{Verification: goodLegacyProof(a, p), Coverage: LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1, Observed: len(p.Live)}, nil
+		return referenceFixture(a, p, LegacyReconciliation{Verification: goodLegacyProof(a, p), Started: now, Finished: now}), nil
 	})
 	proof, _ := verifier.ReconcileLegacy(ctx, a, p)
 	r, e := ReviewLegacyReconciliation(a, p, proof)
@@ -392,7 +392,7 @@ func TestReconciliationRejectsTamperedExportedInventory(t *testing.T) {
 	p.Live[0].GraphID = "forged-reference"
 	proof := goodLegacyProof(a, p)
 	now := time.Now().UTC()
-	evidence := LegacyReconciliation{Verification: proof, Coverage: LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1, Observed: len(p.Live)}
+	evidence := referenceFixture(a, p, LegacyReconciliation{Verification: proof, Started: now, Finished: now})
 	r, e := ReviewLegacyReconciliation(a, p, evidence)
 	if e != nil {
 		t.Fatal(e)

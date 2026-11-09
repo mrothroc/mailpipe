@@ -172,11 +172,7 @@ func BenchmarkLegacyReconciliation(b *testing.B) {
 				}
 				a := mailbox.Account{ID: "invented-history-account", ProviderID: GraphProvider}
 				v := reconcileLegacyFunc(func(_ context.Context, a mailbox.Account, p LegacyPreparation) (LegacyReconciliation, error) {
-					proof := goodLegacyProof(a, p)
-					missing := p.Live[0].N
-					delete(proof.States, missing)
-					now := time.Now().UTC()
-					return LegacyReconciliation{Verification: proof, Unavailable: map[int64]string{missing: LegacyUnavailable}, Coverage: LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1, Observed: len(proof.States)}, nil
+					return reconciliationBenchmarkEvidence(a, p), nil
 				})
 				proof, e := v.ReconcileLegacy(context.Background(), a, p)
 				if e != nil {
@@ -212,5 +208,55 @@ func BenchmarkLegacyCancellation(b *testing.B) {
 		if !errors.Is(e, context.Canceled) {
 			b.Fatalf("cancellation did not stop preparation: %v", e)
 		}
+	}
+}
+
+// Shared by the benchmark and a small setup regression, without timing a large
+// history just to discover an invalid evidence fixture.
+func reconciliationBenchmarkEvidence(a mailbox.Account, p LegacyPreparation) LegacyReconciliation {
+	proof := goodLegacyProof(a, p)
+	missing := p.Live[0].N
+	delete(proof.States, missing)
+	now := time.Now().UTC()
+	return referenceFixture(a, p, LegacyReconciliation{Verification: proof, Unavailable: map[int64]string{missing: LegacyReferenceUnavailable}, Started: now, Finished: now})
+}
+
+func TestLegacyReconciliationBenchmarkEvidence(t *testing.T) {
+	ctx := context.Background()
+	path, a, p, _ := referencePreparation(t)
+	fixture, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fixture.Upsert(ctx, "inbox", Record{GraphID: "benchmark-anchor", InternetMessageID: "<benchmark-anchor@example.org>", Sender: "sender@example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = fixture.Close(); err != nil {
+		t.Fatal(err)
+	}
+	p, err = PrepareLegacyBinding(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := reconcileLegacyFunc(func(_ context.Context, a mailbox.Account, p LegacyPreparation) (LegacyReconciliation, error) {
+		return reconciliationBenchmarkEvidence(a, p), nil
+	})
+	proof, err := verifier.ReconcileLegacy(ctx, a, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := ReviewLegacyReconciliation(a, p, proof)
+	if err != nil {
+		t.Fatal("benchmark evidence failed current admission", err)
+	}
+	if receipt.Version != 9 || receipt.Method != LegacyReferenceMethod || receipt.ReferenceContext == nil || receipt.ReferenceContext.RequestedReferences != len(p.Live) || len(proof.Unavailable) != 1 || len(proof.Verification.States) != len(p.Live)-1 {
+		t.Fatal("benchmark fixture lost complete found/unavailable coverage")
+	}
+	bound, err := ReconcileLegacy(ctx, path, a, p, receipt.Digest, verifier)
+	if err != nil {
+		t.Fatal("benchmark evidence failed actual binding", err)
+	}
+	if err = bound.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

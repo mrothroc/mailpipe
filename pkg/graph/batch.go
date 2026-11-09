@@ -80,8 +80,15 @@ func (c *Client) Batch(ctx context.Context, reqs []BatchRequest) ([]BatchRespons
 		if err := c.do(ctx, http.MethodPost, "/$batch", nil, "", map[string]any{"requests": wire}, &out, readOnly); err != nil {
 			return nil, err
 		}
+		pendingIDs := make(map[string]bool, len(pending))
+		for _, r := range pending {
+			pendingIDs[r.ID] = true
+		}
 		byID := make(map[string]BatchResponse, len(out.Responses))
 		for _, r := range out.Responses {
+			if !pendingIDs[r.ID] {
+				return nil, fmt.Errorf("batch response has an unexpected request identity")
+			}
 			if _, duplicate := byID[r.ID]; duplicate {
 				return nil, fmt.Errorf("batch response repeats request %q", r.ID)
 			}

@@ -139,7 +139,7 @@ func TestReconcileSelectedEqualCommand(t *testing.T) {
 	if doc["enumerated_sender_address"] != doc["inspected_sender_address"] || doc["status"] != "diagnostic_only" || doc["admission_evaluated"] != false {
 		t.Fatal("equal diagnostic mislabelled")
 	}
-	if g.pages != 2 || g.batches != 2 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 || len(g.moved) != 0 {
+	if g.pages != 1 || g.batches != 2 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 || len(g.moved) != 0 {
 		t.Fatal("equal diagnostic changed effects")
 	}
 	if _, found, err := store.ReadLegacyReconciliationReceipt(context.Background(), e.db, subject.Account()); err != nil || found {

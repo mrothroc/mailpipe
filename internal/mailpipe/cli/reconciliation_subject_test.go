@@ -167,7 +167,7 @@ func TestReconciliationSubjectChangeStopsBeforeRemoteProof(t *testing.T) {
 			var out, stderr bytes.Buffer
 			root.SetOut(&out)
 			root.SetErr(&stderr)
-			root.SetArgs([]string{"--db", e.db, "account", "reconcile", "--json"})
+			root.SetArgs(append([]string{"--db", e.db}, legacyDiagnosticArgs(t)...))
 			err = root.ExecuteContext(context.Background())
 			if err == nil || out.Len() != 0 || unexpected.Load() != 0 || auth.calls.Load() == 0 {
 				t.Fatalf("changed subject produced proof or another request: %v %s %s", err, out.String(), stderr.String())

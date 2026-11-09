@@ -91,7 +91,7 @@ func TestReconciliationReadFailureCategoriesReachCommandOutput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			code, out, stderr := e.run("account", "reconcile", "--json")
+			code, out, stderr := e.run(legacyDiagnosticArgs(t)...)
 			if code != agentio.ExitRuntime || out != "" {
 				t.Fatalf("failed evidence produced success/output: %d %q %s", code, out, stderr)
 			}

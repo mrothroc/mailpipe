@@ -118,3 +118,39 @@ func TestBatchRejectsMissingResponsesAndOversizedOrDuplicateBatches(t *testing.T
 		t.Fatal("duplicate ids accepted")
 	}
 }
+
+func TestBatchRejectsUnsolicitedResponsesWithoutReplay(t *testing.T) {
+	for _, kind := range []string{"read", "mutation", "prior-success-on-retry"} {
+		t.Run(kind, func(t *testing.T) {
+			calls := 0
+			c, _ := client(t, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if kind == "prior-success-on-retry" && calls == 1 {
+					_, _ = w.Write([]byte(`{"responses":[{"id":"1","status":200,"body":{}},{"id":"2","status":429,"headers":{"Retry-After":"0"},"body":{}}]}`))
+					return
+				}
+				if kind == "prior-success-on-retry" {
+					_, _ = w.Write([]byte(`{"responses":[{"id":"1","status":200,"body":{}},{"id":"2","status":200,"body":{}}]}`))
+					return
+				}
+				_, _ = w.Write([]byte(`{"responses":[{"id":"1","status":200,"body":{}},{"id":"2","status":200,"body":{}},{"id":"unsolicited","status":200,"body":{}}]}`))
+			})
+			c.Sleep = func(time.Duration) {}
+			method := "GET"
+			if kind == "mutation" {
+				method = "POST"
+			}
+			_, err := c.Batch(context.Background(), []graph.BatchRequest{{ID: "1", Method: method, URL: "/me/messages/first"}, {ID: "2", Method: method, URL: "/me/messages/second"}})
+			if err == nil || strings.Contains(err.Error(), "unsolicited") {
+				t.Fatal("unexpected response accepted or echoed", err)
+			}
+			want := 1
+			if kind == "prior-success-on-retry" {
+				want = 2
+			}
+			if calls != want {
+				t.Fatal("malformed response retried mutation/read")
+			}
+		})
+	}
+}

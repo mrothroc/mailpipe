@@ -19,8 +19,9 @@ mailpipe account reconcile --json
 
 Opening an old schema can perform a backed-up migration. The preview itself does
 not bind history, save routing, publish sync observations or change server mail.
-It inventories the complete database, enumerates current primary-mailbox metadata,
-and inspects every original live immutable reference. It fetches no bodies.
+It inventories the complete database and inspects every original live immutable
+reference under the authenticated account. It does not enumerate unrelated
+mailbox messages or fetch bodies.
 
 Review the immutable account, complete history digest, reconciliation approval
 digest, separate observation audit digest,
@@ -30,22 +31,14 @@ coverage and observation times, counts, and **every message disposition**:
   sender passed independent inspection. Review `original_folder`, the resolved
   `original_memberships`, the current memberships in `state`, and
   `membership_changed`. A collection change is explicit old-to-current evidence,
-  not an identity replacement; every change requires owner review. If
-  `sender_address_disagrees`, `sender_casing_changed`, `recipient_casing_changed`,
-  `recipient_name_changed` or `sender_name_changed`
-  is true, compare the exact `enumerated_state` with inspection `state`. Sender and recipient
-  display names and sender/indexed-recipient address casing are separate reviewed
-  differences. A noncase sender disagreement selects inspection only when its
-  sender/header still pass the original history checks and both source mappings
-  are validated. It does not declare aliases equivalent or establish ownership.
-  `sender_address_disagrees` and `sender_casing_changed` are mutually exclusive.
-  Recipient name and casing flags remain independent. Recipient
-  address relationships, positions, shape, duplicate multiplicity and other
-  metadata stay strict.
-  Review the complete pair, including private overflow output.
-- `unavailable`: a completed enumeration did not observe this exact ID, and a
-  subsequent exact lookup returned Graph's recognized item-not-found response.
-  The original row remains history, with no invented current membership/revision.
+  not identity replacement. Review the complete exact inspection `state`, its
+  `read_ref`, `read_outcome` and `source_validated` stamp. No enumeration pair or
+  presentation-change flags are fabricated. Names and addresses are preserved
+  exactly, not used to merge identities or infer ownership.
+- `unavailable`: that exact original reference returned a correctly associated,
+  recognized Graph item-not-found response. This proves only inaccessibility
+  through that reference at observation time, not deletion or archive absence.
+  The original row remains history, without invented membership or revision.
 - `historical`: the original row was already removed. Its history still requires
   owner attribution, including when there are no live rows.
 
@@ -57,30 +50,43 @@ incomplete run produces no executable proposal digest.
 
 Only if the owner knows that **all** history belongs to the displayed account,
 including every unavailable row, and approves every displayed old-to-current
-membership change, sender-address disagreement, address casing pair and
-sender/recipient display-name pair, obtain
+membership change and exact inspected state, obtain
 specific approval for local attribution:
 
 ```text
 mailpipe account reconcile --execute --confirm-account <account> --confirm-history <history-digest> --confirm-reconciliation <reconciliation-digest>
 ```
 
-Use the exact reviewed values. For version 8, `--confirm-reconciliation` accepts
-the stable `reconciliation_digest`, never `audit_digest`. Execute regenerates and
-validates all evidence under exclusive lifecycle ownership. A changed inventory
-or inspected approval input requires a new preview and review. Already-permitted
-enumeration presentation differences may produce a fresh audit while approval
-stays identical. The CLI has no prior audit input and does not claim to detect
-that difference. Within one execution, both digests must match its frozen owned
-snapshot at final transaction review. An editable report cannot supply remote proof. Absence, a matching sender,
-message content, and a successful sign-in do not establish historical ownership.
+Use the exact reviewed values. Version 9 uses method
+`graph-exact-original-inspections-v1` and coverage `graph-original-references-v1`.
+`--confirm-reconciliation` accepts the stable approval `reconciliation_digest`,
+never `audit_digest`. Execute regenerates all exact-reference evidence under
+exclusive lifecycle ownership. A changed inventory or inspected approval input
+requires a new preview and review. The fresh audit binds actual read context and
+may differ from preview; the CLI has no prior audit input. Both digests must match
+THIS execution's frozen owned snapshot at final transaction review. An editable
+report cannot supply remote proof. Neither inaccessibility, matching sender,
+message content nor sign-in establishes historical ownership.
 At least one original live immutable reference must verify before newly
 unavailable references can be accepted as owner-confirmed history.
+
+## Resource bounds
+
+Default recovery admits at most 1,000,000 original live references and 256 MiB of
+encoded complete inspected states. Exceeding a bound fails the entire pass;
+there is no successful truncation. The cooperative 30-minute remote-read budget
+honors an earlier parent deadline. It is not a hard deadline for the entire
+command: history preparation, verified backup and SQL retain their parent context.
+Report `requested_references`, `completed_references`, `inspection_batches` and
+`state_bytes` describe this acquisition. Logical batches exclude transport retry
+attempts. Existing finite retry rules remain; there is no global retry-until-quiet.
+History inventories, copies, receipt serialization and backup space still scale
+with history. Multiple exact lookups are not an atomic mailbox snapshot.
 
 ## Results and limits
 
 A completed reconciliation permanently binds the existing mirror and records an
-atomic receipt with the source/approval/audit digests, verified backup, coverage,
+atomic receipt with the source/approval/audit digests, verified backup reference/digest, coverage,
 confirmations and per-message dispositions. All original message numbers, Graph
 IDs, legacy columns, bodies, verdicts, filing provenance, plans and action IDs
 remain. Unavailable rows have no current membership and are excluded from active
@@ -104,20 +110,17 @@ same three confirmations. This verifies the committed receipt and repairs routin
 it does not replay reconciliation, replace the mirror or rebind it.
 
 Incomplete enumeration, authorization/read failures, canceled reads, malformed
-pages, unsafe or cyclic pagination, duplicates and exceeded safety limits never
-become absence evidence. Transient failures report a read-failure result: resolve
-the cause and retry a preview. Structural conflicts report a stale/blocked result:
-preserve the mirror and request owner review of the original identity evidence.
-Incomplete-evidence errors include fixed `phase` and `category` labels on stderr.
-`enumeration` identifies the primary-mailbox scan, `inspection` the exact-original
-lookup pass, `consistency` a disagreement between those observations, and
-`completion` the final cancellation check. Categories distinguish known typed
-cancellation/deadline, response limits, malformed responses, transport/read
-failures and selected HTTP response classes. Unknown causes remain
-`unknown-read-failure` or `unknown-api-response`; no raw cause text is printed.
-For example, `phase=consistency; category=metadata-changed` requires fresh
-observation and review, while `phase=inspection; category=throttled-http-429`
-reports a read that still failed after the existing bounded retries.
+responses, wrong request association, ambiguous error envelopes and exceeded
+safety limits never become absence evidence. Resolve the read failure before a
+fresh preview. Structural conflicts report a stale/blocked result; preserve the
+mirror and review original identity evidence. Fixed `phase=inspection` categories
+include known cancellation/deadline, read failures and selected HTTP responses.
+`invalid-reference-response` denotes unsupported selected-state or 404 envelope
+structure, not a provider cause. No raw cause text is printed.
+
+The explicit legacy diagnostic modes additionally report `enumeration`,
+`consistency` and `completion` phases. Their list/paired semantics below do not
+apply to default reference-scoped attribution.
 
 HTTP categories describe responses, not mailbox ownership or sign-in state.
 In particular, `not-found-http-404` in a failed pass is not absence evidence or
@@ -126,10 +129,29 @@ account or credential problem. These labels contain no message/account IDs,
 local numbers, provider codes/messages, URLs or exception text. They add no reads,
 retries or proof; every failed pass still has no proposal digest.
 
+Legacy diagnostic enumeration failures distinguish five fixed categories. `removed-marker-null`
+means the decoded record contained an explicit null `@removed` member;
+`removed-marker-object` means a present object, without validating its reason;
+`removed-marker-invalid-shape` means another JSON token shape. All remain
+rejected. Syntactically malformed responses and missing/null selected metadata
+keep their earlier error categories, even when a removal member is present.
+
+`duplicate-id-within-page` and `duplicate-id-across-pages` describe recurrence of
+the exact case-sensitive decoded ID among successfully mapped records on the
+same or a previous page. Removal classification takes precedence if both apply.
+Existing metadata, cancellation and resource checks keep their precedence. These
+labels disclose no IDs, page numbers, tokens or values, add no reads/retries, and
+prove neither the provider's cause nor deletion, ownership or complete coverage.
+They do not permit deduplication or import delta-query replay rules into list
+pagination. Selected-original diagnostics retain their generic fixed acquisition
+failure message; the inner category need not appear in that mode.
+
 ## Private sender-address diagnostics
 
-A consistency failure can report `fields=sender-address` with a fixed string
-relationship. This does not identify its cause or establish which sender is
+These explicit diagnostic modes retain the older full-list/paired-observation
+protocol. They never reach successor store review or produce a proposal, even
+when the legacy collection succeeds. A legacy consistency failure can report
+`fields=sender-address` with a fixed string relationship. This does not identify its cause or establish which sender is
 correct. The strict checks remain in force. If an owner needs to inspect the
 conflicting record, an unconfirmed preview can explicitly request a raw private
 artifact:
@@ -239,65 +261,21 @@ and [immutable-ID guidance](https://learn.microsoft.com/en-us/graph/outlook-immu
 
 ### Identity, membership and older reports
 
-A found original must match its exact immutable reference, header and sender.
-A different collection is accepted only as explicit reviewed state in this
-reconciliation path. Enumeration and inspection must agree on current metadata,
-membership and any recorded revision, except reviewed same-ID sender and indexed
-recipient display-name differences, sender/recipient address casing, and the directional sender rule
-below. The name exception preserves both exact decoded observations;
-changed names must be valid UTF-8. It does not normalize names or assert that two
-display names identify the same person or owner. The casing rule is unchanged:
-it uses Unicode simple case folding (`strings.EqualFold`)
-without trimming, sorting, alias expansion or Unicode normalization. It does
-not establish RFC mailbox equivalence. Original spellings remain in both states;
-no address is globally lowercased. Strict `account bind`, ordinary sync and action-plan
-preconditions retain their existing comparisons. An unavailable historical
-source-folder mapping remains blocked; no name or collection is guessed.
+Current reference-scoped attribution requires the exact immutable reference and
+original historical header/sender checks. Review the exact inspected state and
+old-to-current memberships under the version 9 contract in
+[ADR 0012](adr/0012-reference-scoped-reconciliation.md). Strict `account bind`,
+ordinary sync and action preconditions retain their existing comparisons. A
+missing historical source-folder mapping remains blocked; none is guessed.
 
-`recipient_name_changed` reports any byte difference in names at corresponding
-positions; `recipient_casing_changed` reports address spelling differences only.
-Each changed name must be valid UTF-8. Empty, whitespace and control-containing
-names remain exact untrusted strings in both raw states, without normalization.
-The existing To-then-Cc order, nilness, cardinality and duplicate multiplicity stay
-strict. Comparison never sorts or matches across slots. Indistinguishable
-duplicate address slots have position-only comparison, with no inferred cross-slot
-identity; review both full arrays. Names do not establish identity or ownership.
-
-For the same authenticated account and exact immutable reference, recovery may
-select inspection's sender address despite a noncase enumeration disagreement
-only when inspection still passes the ORIGINAL historical sender/header checks.
-Both observations must have independently validated source-to-mapping integrity;
-false or unknown integrity blocks this exception. Changed addresses must be
-nonempty valid UTF-8. The report retains both complete raw states and derives
-`sender_address_disagrees` separately from case-only `sender_casing_changed`.
-This is directional observation selection, not trimming, alias expansion, RFC
-equivalence or permission to replace original history. All unrelated metadata,
-recipient address positions/shape/multiplicity, current memberships and recorded
-revisions remain strict. Default collection retains only integrity stamps, not raw source traces.
-
-New proposals and receipts use JSON version 8. `reconciliation_digest` is stable
-approval under domain `mailpipe-legacy-reconciliation-approval-v8`: exact account,
-complete history digest, coverage, folder mappings, identities/dispositions,
-original memberships/change flags and the complete inspected states. Every
-inspected metadata spelling, revision and membership remains approval-bound.
-Enumeration-derived flags and optional pair presence are excluded, without
-relaxing validation of that evidence.
-
-`audit_digest`, under `mailpipe-legacy-reconciliation-audit-v8`, binds that computed
-approval context, observation times/counts and full raw items with retained pairs
-and derived flags. Missing enumeration state remains absent, never fabricated;
-metadata-equal cases retain no extra enumerated state. This is not a new
-all-record raw capture. Review the
-complete current report, including private overflow. An audit identifies untrusted
-observations and cannot grant approval. Invalid evidence produces neither digest.
-
-A version-1 through version-7 pending proposal cannot execute new binding, even
-without differences; obtain a fresh preview. Committed version-1 through version-7
-receipts remain readable offline and retain exact STORED-confirmation routing
-repair, without rehashing/reinterpreting or rewriting receipt/item bytes. They
-have no invented audit digest. See [approval and audit](adr/0011-reconciliation-approval-audit-digests.md)
-for the precise separation and [exact-ID reconciliation](adr/0010-exact-id-reconciliation.md)
-for unchanged admission/history boundaries.
+Committed versions 1–8 describe the older full-list/paired-observation protocol.
+Their presentation flags and pairing rules are documented in
+[ADR 0010](adr/0010-exact-id-reconciliation.md), and version 8's approval/audit
+separation in [ADR 0011](adr/0011-reconciliation-approval-audit-digests.md).
+Those rules do not define new proposals. Pending versions 1–8 cannot authorize
+version 9; obtain a fresh preview. Committed receipts retain byte-immutable
+offline display and exact stored-confirmation routing repair. Missing old audit
+identities are not reconstructed or invented.
 
 Older saved first-conflict diagnostic reports describe an incomplete observation,
 not a proposal. Their bounded original/observed fields and omission counts are
@@ -367,8 +345,8 @@ history. It also defines the phase timer boundaries. The
 defines its in-process read-only transport, missing-reference fixture and counted
 read envelopes, batches and exact inspection subrequests. Without retries,
 inspection uses one batch per adapter batch limit rather than one HTTP request
-per original; it still looks up every original independently. Enumeration, full
-history digests, backups and receipt serialization retain their existing costs. Network latency is excluded. Timings are observations, not CI
+per original; it still looks up every original independently. The legacy benchmark includes enumeration; default reference acquisition does not.
+Full history digests, backups and receipt serialization retain their existing costs. Network latency is excluded. Timings are observations, not CI
 thresholds or production capacity guarantees.
 
 The measurements below were collected on 2026-11-04 **before** removed-history
@@ -401,7 +379,7 @@ executions still scale with rows, columns and chunks. Cumulative allocations
 increased slightly even though these preparation timings improved. No source,
 backup or transaction digest boundary was removed.
 
-The separate in-process Graph collector measured 0.299–0.320 seconds at 10k
+The historical enumeration-based in-process Graph collector measured 0.299–0.320 seconds at 10k
 references (136385696–136738696 allocated bytes, 1513494–1513835 allocations)
 and 2.430–2.556 seconds at 100k (1322105944–1323273808 allocated bytes,
 15135337–15135570 allocations). It made exactly 10,000 inspections plus 50 pages

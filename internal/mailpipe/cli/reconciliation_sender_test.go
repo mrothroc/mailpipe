@@ -37,7 +37,7 @@ func (g *senderCasingGraph) Batch(ctx context.Context, reqs []graph.BatchRequest
 	}
 	return out, nil
 }
-func TestReconcileSenderCasingReview(t *testing.T) {
+func TestReconcileExactSenderStateReview(t *testing.T) {
 	for _, combined := range []bool{false, true} {
 		t.Run(map[bool]string{false: "sender-only", true: "combined"}[combined], func(t *testing.T) {
 			e := newEnv(t)
@@ -60,14 +60,14 @@ func TestReconcileSenderCasingReview(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("sender preview: %d %s", code, stderr)
 			}
-			if !strings.Contains(out, `"sender_casing_changed":true`) || !strings.Contains(out, `"version":8`) || !strings.Contains(out, "SENDER@Example.org") || !strings.Contains(out, "sender@example.org") {
+			if strings.Contains(out, `"sender_casing_changed"`) || !strings.Contains(out, `"version":9`) || !strings.Contains(out, "SENDER@Example.org") {
 				t.Fatal("missing raw sender review")
 			}
 			rows := reconciliationRows(t, out)
-			if rows[1]["recipient_casing_changed"] != combined {
+			if rows[1]["recipient_casing_changed"] != nil {
 				t.Fatal("recipient flag was not independently derived")
 			}
-			if g.pages != 1 || g.batches != 1 || len(g.moved) != 0 {
+			if g.pages != 0 || g.batches != 1 || len(g.moved) != 0 {
 				t.Fatal("sender policy changed read/actions")
 			}
 			legacy, err := store.Open(e.db)
@@ -96,7 +96,7 @@ func TestReconcileSenderCasingReview(t *testing.T) {
 			b.Close()
 			e.auth.signedIn = false
 			pages, batches := g.pages, g.batches
-			if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || !strings.Contains(out, `"sender_casing_changed":true`) {
+			if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || !strings.Contains(out, "SENDER@Example.org") {
 				t.Fatalf("offline sender receipt: %d %s", code, stderr)
 			}
 			if g.pages != pages || g.batches != batches || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {
@@ -126,7 +126,7 @@ func TestReconcileSenderMismatchSafeFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			code, out, stderr := e.run("account", "reconcile", "--json")
+			code, out, stderr := e.run(legacyDiagnosticArgs(t)...)
 			if code != agentio.ExitRuntime || out != "" || !strings.Contains(stderr, fields) || !strings.Contains(stderr, "sender-address="+tc.relation+";") {
 				t.Fatalf("missing bounded failed comparison: %d %s", code, stderr)
 			}

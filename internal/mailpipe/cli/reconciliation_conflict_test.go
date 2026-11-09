@@ -459,8 +459,8 @@ type injectedLegacyDiagnosticProvider struct {
 	report *graphmail.ReconciliationConflict
 }
 
-func (p injectedLegacyDiagnosticProvider) ReconcileLegacyReferences(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error) {
-	return graphmail.LegacyEvidence{}, &graphmail.ReconciliationError{Structural: true, Reason: "identity evidence requires review", Conflict: p.report}
+func (p injectedLegacyDiagnosticProvider) ReconcileOriginalReferences(context.Context, []graphmail.LegacyReference) (graphmail.ReferenceEvidence, error) {
+	return graphmail.ReferenceEvidence{}, &graphmail.ReconciliationError{Structural: true, Reason: "identity evidence requires review", Conflict: p.report}
 }
 func installInjectedLegacyDiagnostic(t *testing.T, e *env, originals []store.Message, observed, header, sender, folder string) *graphmail.ReconciliationConflict {
 	t.Helper()

@@ -102,18 +102,10 @@ func TestReconcileSenderDiagnosticControls(t *testing.T) {
 				args = append(args, "--sender-address-diagnostic-out", path)
 			}
 			code, out, stderr := e.run(args...)
-			if kind == "success" {
-				if code != 0 || !strings.Contains(out, `"version":8`) {
-					t.Fatalf("diagnostic option changed successful preview %d %s", code, stderr)
-				}
-				first := reconciliationRows(t, out)[0]["reconciliation_digest"]
-				code, out, stderr = e.run("account", "reconcile", "--json")
-				if code != 0 || reconciliationRows(t, out)[0]["reconciliation_digest"] != first {
-					t.Fatal("diagnostic changed proposal digest")
-				}
-			} else if code == 0 || out != "" {
+			if code == 0 || out != "" {
 				t.Fatal("diagnostic changed rejection/authority")
 			}
+
 			raw, err := os.ReadFile(path)
 			if kind == "hostile" {
 				var doc map[string]any
@@ -128,11 +120,11 @@ func TestReconcileSenderDiagnosticControls(t *testing.T) {
 					t.Fatal("normal output leaked raw content/path")
 				}
 			}
-			expected := 1
-			if kind == "success" {
-				expected = 2
+			expectedPages := 1
+			if kind == "no-flag" {
+				expectedPages = 0
 			}
-			if g.pages != expected || g.batches != expected || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {
+			if g.pages != expectedPages || g.batches != 1 || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {
 				t.Fatal("diagnostics expanded mailbox reads/actions")
 			}
 			legacy, err := store.Open(e.db)
