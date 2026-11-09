@@ -1,5 +1,9 @@
 # Exact-ID historical reconciliation
 
+New attribution now follows [ADR 0012](0012-reference-scoped-reconciliation.md).
+The enumeration/pair rules below describe older receipts and retained private
+diagnostics, not the current default acquisition policy.
+
 Status: accepted. Raw-observation approval identity is superseded by
 [ADR 0011](0011-reconciliation-approval-audit-digests.md); other constraints remain.
 

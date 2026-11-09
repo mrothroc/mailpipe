@@ -423,22 +423,31 @@ func TestConfigInitRechecksExistenceInsideSession(t *testing.T) {
 
 }
 
-func (p *configTestGraph) ReconcileLegacyReferences(ctx context.Context, _ []graphmail.LegacyReference) (graphmail.LegacyEvidence, error) {
+func (p *configTestGraph) ReconcileOriginalReferences(ctx context.Context, refs []graphmail.LegacyReference) (graphmail.ReferenceEvidence, error) {
 	// These fixtures have no live references. Keep the existing barrier at
 	// post-binding routing resolution, where processing can legitimately reopen
 	// the account, rather than inside exclusive historical verification.
 	started := time.Now().UTC()
 	if e := ctx.Err(); e != nil {
-		return graphmail.LegacyEvidence{}, e
+		return graphmail.ReferenceEvidence{}, e
 	}
-	return graphmail.LegacyEvidence{States: map[int64]mailbox.State{}, Unavailable: map[int64]bool{}, Started: started, Finished: time.Now().UTC(), Pages: 1}, nil
+	if len(refs) != 0 {
+		return graphmail.ReferenceEvidence{}, errors.New("configuration fixture requires an empty original inventory")
+	}
+	return graphmail.ReferenceEvidence{Account: p.account, Method: graphmail.ReferenceMethod, Coverage: graphmail.ReferenceCoverage, Started: started, Finished: time.Now().UTC(), Context: graphmail.ReferenceContext{RequestedReferences: 0, CompletedReferences: 0, InspectionBatches: 0, StateBytes: 0}, Outcomes: map[int64]graphmail.ReferenceOutcome{}}, nil
 }
 func reconciliationConfigArgs(t *testing.T, a mailbox.Account, p store.LegacyPreparation) []string {
 	t.Helper()
 	now := time.Now().UTC()
-	r, e := store.ReviewLegacyReconciliation(a, p, store.LegacyReconciliation{Verification: store.LegacyVerification{Account: a, Nonce: p.Challenge(), States: map[int64]mailbox.State{}, Folders: map[string]mailbox.CollectionRef{}}, Coverage: store.LegacyPrimaryMailbox, Started: now, Finished: now, Pages: 1})
+	if len(p.Live) != 0 || len(p.Removed) != 0 {
+		t.Fatal("configuration fixture requires empty history")
+	}
+	r, e := store.ReviewLegacyReconciliation(a, p, store.LegacyReconciliation{Method: store.LegacyReferenceMethod, Coverage: store.LegacyReferenceCoverage, Started: now, Finished: now, ReferenceContext: store.LegacyReferenceContext{RequestedReferences: 0, CompletedReferences: 0, InspectionBatches: 0, StateBytes: 0}, ReferenceOutcomes: map[int64]store.LegacyReferenceOutcome{}, Verification: store.LegacyVerification{Account: a, Nonce: p.Challenge(), States: map[int64]mailbox.State{}, Folders: map[string]mailbox.CollectionRef{}}})
 	if e != nil {
 		t.Fatal(e)
+	}
+	if r.Version != 9 || r.Method != store.LegacyReferenceMethod || r.ReferenceContext == nil || *r.ReferenceContext != (store.LegacyReferenceContext{}) || len(r.Items) != 0 {
+		t.Fatal("configuration fixture fabricated reference acquisition")
 	}
 	return []string{"account", "reconcile", "--execute", "--confirm-account", string(a.ID), "--confirm-history", p.Digest(), "--confirm-reconciliation", r.Digest}
 }

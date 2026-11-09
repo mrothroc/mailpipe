@@ -13,6 +13,7 @@ import (
 	"github.com/mrothroc/mailpipe/internal/mailpipe/config"
 	"github.com/mrothroc/mailpipe/pkg/graph"
 	"github.com/mrothroc/mailpipe/pkg/graphmail"
+	"github.com/mrothroc/mailpipe/pkg/mailbox"
 	"github.com/mrothroc/mailpipe/pkg/store"
 )
 
@@ -46,7 +47,7 @@ func TestReconciliationReviewsDistinctIDsAndMembershipChanges(t *testing.T) {
 	}
 	summary := rows[0]
 	for _, row := range rows[1:] {
-		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(8) {
+		if row["disposition"] != "verified" || row["original_folder"] != "inbox" || row["version"] != float64(9) {
 			t.Fatal("incomplete original evidence", row)
 		}
 		old := row["original_memberships"].([]any)[0].(map[string]any)["Collection"].(map[string]any)["CollectionID"]
@@ -198,7 +199,7 @@ func assertCommittedV7Evidence(t *testing.T, item map[string]any) {
 }
 
 func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
-	for _, version := range []int{1, 2, 3, 4, 5, 6, 7} {
+	for _, version := range []int{1, 2, 3, 4, 5, 6, 7, 8} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			e := newEnv(t)
 			sender := "info@campaign.example.org"
@@ -216,7 +217,7 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 				g := &senderCasingGraph{casingGraph: &casingGraph{fakeGraph: e.graph, listed: "Reader@Example.org", inspected: "reader@example.org"}, sender: "INFO@CAMPAIGN.EXAMPLE.ORG"}
 				if version >= 6 {
 					v6 = &committedV6Graph{provenanceGraph: &provenanceGraph{senderNameGraph: &senderNameGraph{senderCasingGraph: g}}}
-					if version == 7 {
+					if version >= 7 {
 						e.provider, err = graphmail.New(&committedV7Graph{v6}, subject.Account())
 					} else {
 						e.provider, err = graphmail.New(v6, subject.Account())
@@ -229,6 +230,32 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+			}
+
+			// Acquire authentic legacy paired observations solely for the
+			// isolated committed-row fixture, never as successor authority.
+			subj, err := e.auth.Subject(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			legacyReader, ok := e.provider.(*graphmail.Provider)
+			if !ok {
+				legacyReader, err = graphmail.New(e.graph, subj.Account())
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			prep, err := store.PrepareLegacyBinding(context.Background(), e.db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refs := []graphmail.LegacyReference{}
+			for _, m := range prep.Live {
+				refs = append(refs, graphmail.LegacyReference{N: m.N, Ref: mailbox.MessageRef{AccountID: subj.Account().ID, MessageID: mailbox.MessageID(m.GraphID), Locator: mailbox.Locator(m.GraphID)}, InternetMessageID: m.InternetMessageID, Sender: m.Sender, Collection: mailbox.CollectionRef{AccountID: subj.Account().ID, CollectionID: "F-inbox"}})
+			}
+			legacyEvidence, err := legacyReader.ReconcileLegacyReferences(context.Background(), refs)
+			if err != nil {
+				t.Fatal(err)
 			}
 			code, out, stderr := e.run("account", "reconcile", "--json")
 			if code != 0 {
@@ -256,7 +283,17 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if err = json.Unmarshal([]byte(raw), &receipt); err != nil {
 				t.Fatal(err)
 			}
-			delete(receipt, "audit_digest")
+			delete(receipt, "method")
+			delete(receipt, "reference_context")
+			receipt["coverage"], receipt["pages"], receipt["observed"] = store.LegacyPrimaryMailbox, legacyEvidence.Pages, legacyEvidence.Observed
+			if receipt["coverage"] != "graph-primary-mailbox-v1" {
+				t.Fatal("fixture lost authentic committed coverage", receipt["coverage"])
+			}
+			if version < 8 {
+				delete(receipt, "audit_digest")
+			} else {
+				receipt["audit_digest"] = "stored-old-audit"
+			}
 			receipt["version"], receipt["reconciliation_digest"] = version, "stored-old-proposal"
 			encoded, err := json.Marshal(receipt)
 			if err != nil {
@@ -272,6 +309,27 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			var oldItem map[string]any
 			if err = json.Unmarshal([]byte(item), &oldItem); err != nil {
 				t.Fatal(err)
+			}
+
+			delete(oldItem, "read_ref")
+			delete(oldItem, "read_outcome")
+			delete(oldItem, "source_validated")
+			n := int64(oldItem["n"].(float64))
+			if before, found := legacyEvidence.EnumeratedStates[n]; found {
+				oldItem["enumerated_state"] = before
+				oldItem["recipient_casing_changed"] = true
+				oldItem["sender_casing_changed"] = version >= 4 && version < 6
+				oldItem["sender_name_changed"] = version >= 5
+				oldItem["sender_address_disagrees"] = version >= 6
+				oldItem["recipient_name_changed"] = version >= 7
+				// Round-trip into the primitive output assertion shape.
+				rawItem, e := json.Marshal(oldItem)
+				if e != nil {
+					t.Fatal(e)
+				}
+				if e = json.Unmarshal(rawItem, &oldItem); e != nil {
+					t.Fatal(e)
+				}
 			}
 			keys := []string{}
 			if version < 7 {
@@ -304,7 +362,7 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			}
 			frozenItem := string(encoded)
 			if version >= 6 {
-				if version == 7 {
+				if version >= 7 {
 					assertCommittedV7Evidence(t, oldItem)
 				} else {
 					assertCommittedV6SenderEvidence(t, oldItem)
@@ -328,8 +386,11 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 			if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || reconciliationRows(t, out)[0]["version"] != float64(version) {
 				t.Fatalf("old receipt requires auth: %d %s", code, stderr)
 			}
+			if reconciliationRows(t, out)[0]["coverage"] != "graph-primary-mailbox-v1" {
+				t.Fatal("offline old scope changed")
+			}
 			if version >= 6 {
-				if version == 7 {
+				if version >= 7 {
 					assertCommittedV7Evidence(t, reconciliationRows(t, out)[1])
 				} else {
 					assertCommittedV6SenderEvidence(t, reconciliationRows(t, out)[1])
@@ -338,7 +399,7 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 					t.Fatal("offline v6 receipt performed reads")
 				}
 			}
-			if reconciliationRows(t, out)[0]["audit_digest"] != "" {
+			if got := reconciliationRows(t, out)[0]["audit_digest"]; (version < 8 && got != "") || (version == 8 && got != "stored-old-audit") {
 				t.Fatal("old receipt acquired a new audit identity")
 			}
 			e.auth.signedIn = true
@@ -359,7 +420,7 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 				t.Fatalf("v1 routing repair replayed binding: %d %s", code, stderr)
 			}
 			if version >= 6 {
-				if version == 7 {
+				if version >= 7 {
 					assertCommittedV7Evidence(t, reconciliationRows(t, out)[1])
 				} else {
 					assertCommittedV6SenderEvidence(t, reconciliationRows(t, out)[1])
@@ -387,6 +448,10 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 				t.Fatal(err)
 			}
 			db.Close()
+			var savedReceipt map[string]any
+			if err = json.Unmarshal([]byte(afterReceipt), &savedReceipt); err != nil || savedReceipt["coverage"] != "graph-primary-mailbox-v1" {
+				t.Fatal("stored old scope changed", err)
+			}
 			if afterItem != frozenItem || afterReceipt != frozenReceipt {
 				t.Fatal("old committed evidence rewritten")
 			}
@@ -398,7 +463,7 @@ func TestReconciliationOldReceiptsOfflineAndRoutingRepair(t *testing.T) {
 				if err = json.Unmarshal([]byte(afterItem), &saved); err != nil {
 					t.Fatal(err)
 				}
-				if version == 7 {
+				if version >= 7 {
 					assertCommittedV7Evidence(t, saved)
 				} else {
 					assertCommittedV6SenderEvidence(t, saved)

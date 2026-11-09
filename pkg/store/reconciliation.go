@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"sort"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -20,10 +18,37 @@ const (
 	LegacyUnavailable    = "not-observed-and-item-not-found"
 )
 
+// Reference reconciliation has a distinct scope from legacy mailbox-list evidence.
+const (
+	LegacyReferenceMethod            = "graph-exact-original-inspections-v1"
+	LegacyReferenceCoverage          = "graph-original-references-v1"
+	LegacyReferenceUnavailable       = "exact-reference-item-not-found"
+	LegacyReferenceFound             = "found"
+	LegacyReferenceNotFound          = "item-not-found"
+	LegacyReferenceLimit             = 1000000
+	LegacyReferenceStateLimit  int64 = 256 << 20
+	LegacyReferenceReadTimeout       = 30 * time.Minute
+)
+
+type LegacyReferenceContext struct {
+	RequestedReferences int   `json:"requested_references"`
+	CompletedReferences int   `json:"completed_references"`
+	InspectionBatches   int   `json:"inspection_batches"`
+	StateBytes          int64 `json:"state_bytes"`
+}
+type LegacyReferenceOutcome struct {
+	Ref             mailbox.MessageRef
+	Kind            string
+	SourceValidated bool
+}
+
 // LegacyReconciliation is supplied by a trusted read-only adapter. Unavailable
 // references have no invented remote State; the owner attributes their history.
 type LegacyReconciliation struct {
-	Verification LegacyVerification
+	Method            string
+	ReferenceContext  LegacyReferenceContext
+	ReferenceOutcomes map[int64]LegacyReferenceOutcome
+	Verification      LegacyVerification
 	// Only verified originals with a reviewed metadata exception have a first
 	// observation.
 	EnumeratedStates map[int64]mailbox.State
@@ -41,6 +66,9 @@ type LegacyReconciliationVerifier interface {
 }
 
 type LegacyReconciliationItem struct {
+	ReadRef                *mailbox.MessageRef  `json:"read_ref,omitempty"`
+	ReadOutcome            string               `json:"read_outcome,omitempty"`
+	SourceValidated        bool                 `json:"source_validated,omitempty"`
 	RecipientNameChanged   bool                 `json:"recipient_name_changed"`
 	SenderAddressDisagrees bool                 `json:"sender_address_disagrees"`
 	SenderNameChanged      bool                 `json:"sender_name_changed"`
@@ -61,6 +89,8 @@ type LegacyReconciliationItem struct {
 // LegacyReconciliationReceipt records local attribution authority and scoped
 // remote evidence. It never authorizes mailbox execution.
 type LegacyReconciliationReceipt struct {
+	Method                         string                           `json:"method,omitempty"`
+	ReferenceContext               *LegacyReferenceContext          `json:"reference_context,omitempty"`
 	Version                        int                              `json:"version"`
 	Account                        mailbox.Account                  `json:"account"`
 	SourceDigest                   string                           `json:"source_digest"`
@@ -83,152 +113,142 @@ type LegacyReconciliationReceipt struct {
 // require owner confirmation.
 func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v LegacyReconciliation) (LegacyReconciliationReceipt, error) {
 	v = ownReconciliation(v)
-	r := LegacyReconciliationReceipt{}
+	zero := LegacyReconciliationReceipt{}
+	invalid := func() (LegacyReconciliationReceipt, error) {
+		return zero, stale("complete exact original-reference evidence required")
+	}
 	if e := a.Validate(); e != nil {
-		return r, e
+		return zero, e
 	}
 	if v.Verification.Account != a {
-		return r, &mailbox.AccountMismatchError{Operation: "legacy reconciliation", Expected: a.ID, Actual: v.Verification.Account.ID}
+		return zero, &mailbox.AccountMismatchError{Operation: "legacy reconciliation", Expected: a.ID, Actual: v.Verification.Account.ID}
 	}
 	if a.ProviderID != GraphProvider || p.digest == "" || p.nonce == "" || v.Verification.Nonce != p.nonce {
-		return r, errors.New("store: exact account and preparation challenge required")
+		return invalid()
 	}
-	if v.Coverage != LegacyPrimaryMailbox || v.Pages <= 0 || v.Observed < len(v.Verification.States) || v.Started.IsZero() || v.Finished.Before(v.Started) {
-		return r, errors.New("store: complete primary-mailbox evidence required")
+	if v.Method != LegacyReferenceMethod || v.Coverage != LegacyReferenceCoverage || v.Pages != 0 || v.Observed != 0 || len(v.EnumeratedStates) != 0 || len(v.SenderSourceIntegrity) != 0 {
+		return invalid()
 	}
-	if len(v.Verification.States)+len(v.Unavailable) != len(p.Live) {
-		return r, errors.New("store: complete disjoint reconciliation inventory required")
+	c := v.ReferenceContext
+	if len(p.Live) > LegacyReferenceLimit || c.RequestedReferences != len(p.Live) || c.CompletedReferences != len(p.Live) || len(v.ReferenceOutcomes) != len(p.Live) || len(v.Verification.States)+len(v.Unavailable) != len(p.Live) || c.StateBytes < 0 || c.StateBytes > LegacyReferenceStateLimit {
+		return invalid()
+	}
+	if (len(p.Live) == 0 && c.InspectionBatches != 0) || (len(p.Live) > 0 && (c.InspectionBatches <= 0 || c.InspectionBatches > len(p.Live))) {
+		return invalid()
+	}
+	if v.Started.IsZero() || v.Finished.Before(v.Started) || v.Finished.Sub(v.Started) > LegacyReferenceReadTimeout {
+		return invalid()
 	}
 	if len(v.Unavailable) > 0 && len(v.Verification.States) == 0 {
-		return r, stale("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference or ask the owner for an approved evidence policy")
+		return zero, stale("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference")
 	}
-	r = LegacyReconciliationReceipt{Version: 8, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
-	acceptedPairs := make(map[int64]bool, len(v.EnumeratedStates))
-	acceptedIntegrity := make(map[int64]bool, len(v.SenderSourceIntegrity))
+	r := LegacyReconciliationReceipt{Version: 9, Method: v.Method, ReferenceContext: &c, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
+	live := map[int64]bool{}
+	numbers := map[int64]bool{}
+	ids := map[string]bool{}
+	folders := map[string]bool{}
+	var stateBytes int64
 	for _, m := range p.Live {
-		if m.GraphID == "" {
-			return LegacyReconciliationReceipt{}, stale("historical immutable identity is missing")
+		if m.N <= 0 || numbers[m.N] || m.GraphID == "" || ids[m.GraphID] || !utf8.ValidString(m.GraphID) || !utf8.ValidString(m.Folder) {
+			return invalid()
 		}
+		live[m.N], numbers[m.N], ids[m.GraphID], folders[m.Folder] = true, true, true, true
 		scope, ok := v.Verification.Folders[m.Folder]
-		if !ok || scope.Validate(a.ID) != nil {
-			return LegacyReconciliationReceipt{}, stale("legacy collection mapping is missing")
+		if !ok || scope.Validate(a.ID) != nil || !utf8.ValidString(string(scope.CollectionID)) {
+			return invalid()
 		}
-		state, verified := v.Verification.States[m.N]
-		reason, unavailable := v.Unavailable[m.N]
-		if verified == unavailable {
-			return LegacyReconciliationReceipt{}, errors.New("store: overlapping or missing reconciliation disposition")
+		o, ok := v.ReferenceOutcomes[m.N]
+		if !ok || !referenceRefValid(a.ID, o.Ref) || o.Ref.MessageID != mailbox.MessageID(m.GraphID) || o.Ref.Locator != mailbox.Locator(m.GraphID) {
+			return invalid()
 		}
-		item := LegacyReconciliationItem{N: m.N, OriginalID: m.GraphID, OriginalFolder: m.Folder, OriginalMemberships: []mailbox.Membership{{Collection: scope}}}
-		if unavailable {
-			if reason != LegacyUnavailable {
-				return LegacyReconciliationReceipt{}, errors.New("store: unavailable reference lacks complete scoped evidence")
+		state, found := v.Verification.States[m.N]
+		reason, missing := v.Unavailable[m.N]
+		ref := o.Ref
+		i := LegacyReconciliationItem{N: m.N, OriginalID: m.GraphID, OriginalFolder: m.Folder, OriginalMemberships: []mailbox.Membership{{Collection: scope}}, ReadRef: &ref, ReadOutcome: o.Kind}
+		switch o.Kind {
+		case LegacyReferenceFound:
+			if !found || missing || !o.SourceValidated || !referenceMetadataValid(state.Metadata) || !utf8.ValidString(state.Revision) {
+				return invalid()
 			}
-			item.Disposition = "unavailable"
-			item.Reason = reason
-		} else {
-			var e error
-			state, item.MembershipChanged, e = reconciliationState(a.ID, m, scope, state)
+			current, changed, e := reconciliationState(a.ID, m, scope, state)
 			if e != nil {
-				return LegacyReconciliationReceipt{}, e
+				return zero, e
 			}
-			item.Disposition = "verified"
-			item.State = &state
-			if enumerated, ok := v.EnumeratedStates[m.N]; ok {
-				if e = reconciliationMetadataPair(a.ID, enumerated, state, v.SenderSourceIntegrity[m.N]); e != nil {
-					return LegacyReconciliationReceipt{}, e
+			for _, membership := range current.Memberships {
+				if !utf8.ValidString(string(membership.Collection.CollectionID)) {
+					return invalid()
 				}
-				enumerated = reconciliationSnapshot(enumerated)
-				item.EnumeratedState = &enumerated
-				item.SenderNameChanged = enumerated.Metadata.Sender.Name != state.Metadata.Sender.Name
-				item.SenderAddressDisagrees = !strings.EqualFold(enumerated.Metadata.Sender.Address, state.Metadata.Sender.Address)
-				item.SenderCasingChanged = !item.SenderAddressDisagrees && enumerated.Metadata.Sender.Address != state.Metadata.Sender.Address
-				if item.SenderAddressDisagrees {
-					acceptedIntegrity[m.N] = true
-				}
-				for i, before := range enumerated.Metadata.Recipients {
-					after := state.Metadata.Recipients[i]
-					item.RecipientNameChanged = item.RecipientNameChanged || before.Name != after.Name
-					item.RecipientCasingChanged = item.RecipientCasingChanged || before.Address != after.Address
-				}
-				acceptedPairs[m.N] = true
 			}
+			raw, e := json.Marshal(current)
+			if e != nil {
+				return zero, e
+			}
+			if int64(len(raw)) > LegacyReferenceStateLimit-stateBytes {
+				return invalid()
+			}
+			stateBytes += int64(len(raw))
+			i.Disposition, i.State, i.MembershipChanged, i.SourceValidated = "verified", &current, changed, true
+		case LegacyReferenceNotFound:
+			if found || !missing || reason != LegacyReferenceUnavailable || o.SourceValidated {
+				return invalid()
+			}
+			i.Disposition, i.Reason = "unavailable", LegacyReferenceUnavailable
+		default:
+			return invalid()
 		}
-		r.Items = append(r.Items, item)
+		r.Items = append(r.Items, i)
 	}
-	for n := range v.EnumeratedStates {
-		if !acceptedPairs[n] {
-			return LegacyReconciliationReceipt{}, errors.New("store: metadata observation requires a verified original")
+	for n := range v.ReferenceOutcomes {
+		if !live[n] {
+			return invalid()
 		}
 	}
-	for n, valid := range v.SenderSourceIntegrity {
-		if !valid || !acceptedIntegrity[n] {
-			return LegacyReconciliationReceipt{}, errors.New("store: source integrity requires a verified sender disagreement")
+	for n := range v.Verification.States {
+		if !live[n] {
+			return invalid()
 		}
+	}
+	for n := range v.Unavailable {
+		if !live[n] {
+			return invalid()
+		}
+	}
+	if stateBytes != c.StateBytes || len(folders) != len(v.Verification.Folders) {
+		return invalid()
 	}
 	for _, m := range p.Removed {
+		if m.N <= 0 || numbers[m.N] || !utf8.ValidString(m.GraphID) || (m.GraphID != "" && ids[m.GraphID]) {
+			return invalid()
+		}
+		numbers[m.N] = true
+		if m.GraphID != "" {
+			ids[m.GraphID] = true
+		}
 		r.Items = append(r.Items, LegacyReconciliationItem{N: m.N, OriginalID: m.GraphID, Removed: true, Disposition: "historical"})
 	}
-	// Items are sorted independently of exported preparation slice order.
 	sort.Slice(r.Items, func(i, j int) bool { return r.Items[i].N < r.Items[j].N })
 	approval, audit, e := reconciliationReceiptDigests(r)
 	if e != nil {
-		return LegacyReconciliationReceipt{}, e
+		return zero, e
 	}
 	r.Digest, r.AuditDigest = approval, audit
 	return r, nil
 }
-
-// Independently validate the adapter's exception at the persistence boundary.
-// Display names are reviewed evidence; recipient addresses remain indexed.
-func reconciliationMetadataPair(account mailbox.AccountID, enumerated, inspected mailbox.State, integrity bool) error {
-	invalid := func() error { return stale("reviewed metadata observations disagree") }
-	if enumerated.Validate(account) != nil || inspected.Validate(account) != nil || len(enumerated.Memberships) != 1 || len(inspected.Memberships) != 1 {
-		return invalid()
-	}
-	disagrees := !strings.EqualFold(enumerated.Metadata.Sender.Address, inspected.Metadata.Sender.Address)
-	precondition := enumerated
-	if disagrees {
-		if !integrity || enumerated.Metadata.Sender.Address == "" || inspected.Metadata.Sender.Address == "" {
-			return invalid()
-		}
-		precondition.Metadata.Sender.Address = inspected.Metadata.Sender.Address
-	}
-	if err := mailbox.CheckPrecondition(account, precondition, inspected); err != nil {
-		return err
-	}
-	a, b := enumerated.Metadata, inspected.Metadata
-	if a.Sender.Name != b.Sender.Name && (!utf8.ValidString(a.Sender.Name) || !utf8.ValidString(b.Sender.Name)) {
-		return invalid()
-	}
-	if !utf8.ValidString(a.Sender.Address) || !utf8.ValidString(b.Sender.Address) {
-		return invalid()
-	}
-	if reflect.DeepEqual(a, b) || (a.Recipients == nil) != (b.Recipients == nil) || len(a.Recipients) != len(b.Recipients) {
-		return invalid()
-	}
-	// Retain position-only comparison even for indistinguishable duplicate
-	// address slots. No sorting, cross-slot identity inference or input mutation.
-	for i, left := range a.Recipients {
-		right := b.Recipients[i]
-		if left.Name != right.Name && (!utf8.ValidString(left.Name) || !utf8.ValidString(right.Name)) {
-			return invalid()
-		}
-		if !utf8.ValidString(left.Address) || !utf8.ValidString(right.Address) || !strings.EqualFold(left.Address, right.Address) {
-			return invalid()
-		}
-		left.Address, right.Address = "", ""
-		left.Name, right.Name = "", ""
-		if !reflect.DeepEqual(left, right) {
-			return invalid()
+func referenceRefValid(account mailbox.AccountID, r mailbox.MessageRef) bool {
+	return r.Validate(account) == nil && r.MessageID == mailbox.MessageID(r.Locator) && utf8.ValidString(string(r.AccountID)) && utf8.ValidString(string(r.MessageID)) && utf8.ValidString(string(r.Locator))
+}
+func referenceMetadataValid(m mailbox.Metadata) bool {
+	for _, s := range []string{m.InternetMessageID, m.Sender.Address, m.Sender.Name, m.Subject, m.Preview} {
+		if !utf8.ValidString(s) {
+			return false
 		}
 	}
-	a.Sender.Address, b.Sender.Address = "", ""
-	a.Sender.Name, b.Sender.Name = "", ""
-	a.Recipients, b.Recipients = nil, nil
-	if !reflect.DeepEqual(a, b) {
-		return invalid()
+	for _, r := range m.Recipients {
+		if !utf8.ValidString(r.Address) || !utf8.ValidString(r.Name) {
+			return false
+		}
 	}
-	return nil
+	return true
 }
 
 func reconciliationSnapshot(s mailbox.State) mailbox.State {
@@ -249,6 +269,11 @@ func ownReconciliation(v LegacyReconciliation) LegacyReconciliation {
 		}
 		return out
 	}
+	outcomes := make(map[int64]LegacyReferenceOutcome, len(v.ReferenceOutcomes))
+	for n, o := range v.ReferenceOutcomes {
+		outcomes[n] = o
+	}
+	v.ReferenceOutcomes = outcomes
 	v.Verification.States = states(v.Verification.States)
 	v.EnumeratedStates = states(v.EnumeratedStates)
 	integrity := make(map[int64]bool, len(v.SenderSourceIntegrity))

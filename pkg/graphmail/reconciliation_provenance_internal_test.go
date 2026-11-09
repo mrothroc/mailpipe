@@ -277,7 +277,7 @@ func TestPublicInspectionKeepsNilOriginObserver(t *testing.T) {
 		t.Fatal("opt-in ambiguous origin not blocked", e)
 	}
 	fault := errors.New("observer-private-secret")
-	_, _, e = p.inspectBatch(context.Background(), []mailbox.MessageRef{refs[0].Ref}, func(mailbox.MessageRef, json.RawMessage, mailbox.State) error { return fault })
+	_, _, e = p.inspectBatch(context.Background(), []mailbox.MessageRef{refs[0].Ref}, func(mailbox.MessageRef, graph.BatchResponse, mailbox.State, error) error { return fault })
 	if !errors.Is(e, fault) {
 		t.Fatal("private observer cause lost")
 	}

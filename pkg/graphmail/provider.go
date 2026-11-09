@@ -504,8 +504,9 @@ func (p *Provider) InspectBatch(ctx context.Context, refs []mailbox.MessageRef) 
 }
 
 // The recovery observer is private, read-only and nil for public inspection.
-// It sees only successful exact-reference responses; it cannot alter requests.
-type inspectionObserver func(mailbox.MessageRef, json.RawMessage, mailbox.State) error
+// It sees each ordered response and its decoded state/read error; it cannot
+// alter requests. Legacy observers explicitly ignore failed reads.
+type inspectionObserver func(mailbox.MessageRef, graph.BatchResponse, mailbox.State, error) error
 
 func (p *Provider) inspectBatch(ctx context.Context, refs []mailbox.MessageRef, observe inspectionObserver) ([]mailbox.State, []error, error) {
 	states := make([]mailbox.State, len(refs))
@@ -541,8 +542,8 @@ func (p *Provider) inspectBatch(ctx context.Context, refs []mailbox.MessageRef, 
 					}
 				}
 			}
-			if e == nil && observe != nil {
-				if err := observe(refs[i], response.Body, states[i]); err != nil {
+			if observe != nil {
+				if err := observe(refs[i], response, states[i], e); err != nil {
 					return states, errs, err
 				}
 			}

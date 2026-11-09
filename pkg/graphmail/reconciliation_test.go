@@ -149,7 +149,7 @@ func TestLegacyReconciliationEvidence(t *testing.T) {
 				"missing-value": "phase=enumeration; category=invalid-page;",
 				"null-value":    "phase=enumeration; category=invalid-page;",
 				"delta":         "phase=enumeration; category=invalid-page;",
-				"duplicate":     "phase=enumeration; category=duplicate-or-removed-record;",
+				"duplicate":     "phase=enumeration; category=duplicate-id-within-page;",
 				"cycle":         "phase=enumeration; category=pagination-cycle;",
 				"metadata":      "phase=enumeration; category=incomplete-metadata;",
 				"null-metadata": "phase=enumeration; category=incomplete-metadata;",

@@ -58,10 +58,7 @@ func TestReconciliationV6FrozenShape(t *testing.T) {
 		if !paired {
 			v.EnumeratedStates = nil
 		}
-		r, err := ReviewLegacyReconciliation(a, p, v)
-		if err != nil {
-			t.Fatal(err)
-		}
+		r := frozenV8Fixture(t, a, p, v)
 		current, err := json.Marshal(r.Items)
 		if err != nil {
 			t.Fatal(err)

@@ -18,8 +18,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type legacyEvidenceProvider interface {
-	ReconcileLegacyReferences(context.Context, []graphmail.LegacyReference) (graphmail.LegacyEvidence, error)
+type referenceEvidenceProvider interface {
+	ReconcileOriginalReferences(context.Context, []graphmail.LegacyReference) (graphmail.ReferenceEvidence, error)
 }
 
 type senderAddressEvidenceProvider interface {
@@ -50,9 +50,27 @@ func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.
 	if v.provider.Account() != a {
 		return proof, &mailbox.AccountMismatchError{Operation: "legacy reconciliation", Expected: a.ID, Actual: v.provider.Account().ID}
 	}
-	collector, ok := v.provider.(legacyEvidenceProvider)
-	if !ok && v.selectedOriginal == 0 {
-		return proof, &mailbox.UnsupportedError{Operation: "Graph legacy reconciliation evidence"}
+	normal := v.selectedOriginal == 0 && !v.senderDiagnostics
+	var collector referenceEvidenceProvider
+	if normal {
+		var ok bool
+		collector, ok = v.provider.(referenceEvidenceProvider)
+		if !ok {
+			return proof, &mailbox.UnsupportedError{Operation: "Graph original-reference reconciliation evidence"}
+		}
+		if len(p.Live) > graphmail.ReferenceLimit {
+			return proof, &graphmail.ReconciliationError{Structural: true, Reason: "original-reference count limit reached; request a reviewed resource plan"}
+		}
+		exact := make([]mailbox.MessageRef, len(p.Live))
+		for i, m := range p.Live {
+			exact[i] = mailbox.MessageRef{AccountID: a.ID, MessageID: mailbox.MessageID(m.GraphID), Locator: mailbox.Locator(m.GraphID)}
+		}
+		if e := graphmail.ValidateReferenceRequests(a.ID, exact); e != nil {
+			return proof, e
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, graphmail.ReferenceReadTimeout)
+		defer cancel()
 	}
 	if v.selectedOriginal != 0 {
 		if _, ok := v.provider.(senderAddressObserver); !ok {
@@ -89,7 +107,7 @@ func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.
 		}
 		refs = append(refs, graphmail.LegacyReference{N: m.N, Ref: mailbox.MessageRef{AccountID: a.ID, MessageID: mailbox.MessageID(m.GraphID), Locator: mailbox.Locator(m.GraphID)}, InternetMessageID: m.InternetMessageID, Sender: m.Sender, Collection: scope})
 	}
-	var evidence graphmail.LegacyEvidence
+	var evidence graphmail.ReferenceEvidence
 	var e error
 	if v.selectedOriginal != 0 {
 		d, e := v.provider.(senderAddressObserver).ObserveLegacySenderAddress(ctx, refs, v.selectedOriginal)
@@ -105,26 +123,33 @@ func (v *reconciliationVerifier) ReconcileLegacy(ctx context.Context, a mailbox.
 		return proof, &graphmail.ReconciliationError{Reason: "selected-original observation association could not be verified"}
 	} else if v.senderDiagnostics {
 		diagnosticCollector := v.provider.(senderAddressEvidenceProvider)
-		evidence, e = diagnosticCollector.ReconcileLegacyReferencesWithSenderAddressDiagnostics(ctx, refs)
+		_, e = diagnosticCollector.ReconcileLegacyReferencesWithSenderAddressDiagnostics(ctx, refs)
+		if e != nil {
+			return proof, e
+		}
+		return proof, &graphmail.ReconciliationError{Reason: "legacy paired diagnostic completed without a rejected sender pair; no reconciliation proposal was generated"}
 	} else {
-		evidence, e = collector.ReconcileLegacyReferences(ctx, refs)
+		evidence, e = collector.ReconcileOriginalReferences(ctx, refs)
 	}
 	if e != nil {
 		return proof, e
 	}
-	proof.Verification.States = evidence.States
-	proof.EnumeratedStates = evidence.EnumeratedStates
-	proof.SenderSourceIntegrity = evidence.SenderSourceIntegrity
-	for n, unavailable := range evidence.Unavailable {
-		if unavailable {
-			proof.Unavailable[n] = store.LegacyUnavailable
+	if evidence.Account != a {
+		return proof, &mailbox.AccountMismatchError{Operation: "original-reference evidence", Expected: a.ID, Actual: evidence.Account.ID}
+	}
+	proof.Method, proof.Coverage = evidence.Method, evidence.Coverage
+	proof.Started, proof.Finished = evidence.Started, evidence.Finished
+	proof.ReferenceContext = store.LegacyReferenceContext{RequestedReferences: evidence.Context.RequestedReferences, CompletedReferences: evidence.Context.CompletedReferences, InspectionBatches: evidence.Context.InspectionBatches, StateBytes: evidence.Context.StateBytes}
+	proof.ReferenceOutcomes = make(map[int64]store.LegacyReferenceOutcome, len(evidence.Outcomes))
+	for n, o := range evidence.Outcomes {
+		proof.ReferenceOutcomes[n] = store.LegacyReferenceOutcome{Ref: o.Ref, Kind: o.Kind, SourceValidated: o.SourceValidated}
+		if o.State != nil {
+			proof.Verification.States[n] = *o.State
+		}
+		if o.Kind == graphmail.ReferenceNotFound {
+			proof.Unavailable[n] = store.LegacyReferenceUnavailable
 		}
 	}
-	proof.Coverage = store.LegacyPrimaryMailbox
-	proof.Started = evidence.Started
-	proof.Finished = evidence.Finished
-	proof.Pages = evidence.Pages
-	proof.Observed = evidence.Observed
 	v.report, e = store.ReviewLegacyReconciliation(a, p, proof)
 	return proof, e
 }
@@ -270,7 +295,7 @@ func reconciliationOutput(agent *agentio.AgentIO, status string, r store.LegacyR
 		if err = json.Unmarshal(raw, &nested); err != nil {
 			return err
 		}
-		rows = append(rows, map[string]any{
+		row := map[string]any{
 			"verified": counts["verified"], "unavailable": counts["unavailable"], "historical": counts["historical"], "status": status,
 			"version": r.Version, "account": string(r.Account.ID), "provider": string(r.Account.ProviderID), "source_digest": r.SourceDigest, "reconciliation_digest": r.Digest, "audit_digest": r.AuditDigest,
 			"coverage": r.Coverage, "started": r.Started.Format(time.RFC3339Nano), "finished": r.Finished.Format(time.RFC3339Nano), "pages": r.Pages, "observed": r.Observed,
@@ -278,13 +303,27 @@ func reconciliationOutput(agent *agentio.AgentIO, status string, r store.LegacyR
 			"original_folder": i.OriginalFolder, "original_memberships": nested["original_memberships"], "membership_changed": i.MembershipChanged, "state": nested["state"],
 			"enumerated_state": nested["enumerated_state"], "recipient_name_changed": i.RecipientNameChanged, "recipient_casing_changed": i.RecipientCasingChanged, "sender_casing_changed": i.SenderCasingChanged, "sender_name_changed": i.SenderNameChanged, "sender_address_disagrees": i.SenderAddressDisagrees,
 			"history_confirmed": r.HistoricalAttributionConfirmed, "backup": r.Backup, "backup_digest": r.BackupDigest,
-		})
+		}
+		if r.Version >= 9 {
+			for _, key := range []string{"pages", "observed", "enumerated_state", "recipient_name_changed", "recipient_casing_changed", "sender_casing_changed", "sender_name_changed", "sender_address_disagrees"} {
+				delete(row, key)
+			}
+			row["method"] = r.Method
+			row["read_ref"], row["read_outcome"], row["source_validated"] = nested["read_ref"], i.ReadOutcome, i.SourceValidated
+			if c := r.ReferenceContext; c != nil {
+				row["requested_references"], row["completed_references"], row["inspection_batches"], row["state_bytes"] = c.RequestedReferences, c.CompletedReferences, c.InspectionBatches, c.StateBytes
+			}
+		}
+		rows = append(rows, row)
 	}
 	header := []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "audit_digest", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "state", "recipient_name_changed", "recipient_casing_changed", "sender_casing_changed", "sender_name_changed", "sender_address_disagrees", "enumerated_state", "verified", "unavailable", "historical"}
+	if r.Version >= 9 {
+		header = []string{"status", "account", "provider", "source_digest", "reconciliation_digest", "audit_digest", "method", "coverage", "requested_references", "completed_references", "inspection_batches", "state_bytes", "n", "disposition", "original_id", "reason", "original_folder", "original_memberships", "membership_changed", "read_ref", "read_outcome", "source_validated", "state", "verified", "unavailable", "historical"}
+	}
 	return agentio.Tabled(agent, header, rows, func(row map[string]any) []string {
 		values := make([]string, len(header))
 		for j, key := range header {
-			if key == "state" || key == "original_memberships" || key == "enumerated_state" {
+			if key == "state" || key == "original_memberships" || key == "enumerated_state" || key == "read_ref" {
 				raw, _ := json.Marshal(row[key])
 				values[j] = string(raw)
 			} else {
@@ -391,7 +430,11 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 		if execute && !verifier.confirmed {
 			return agentio.NewUsageError("history changed or was not reviewed", "mailpipe account reconcile")
 		}
-		fmt.Fprintln(agent.Stderr(), "[hint] observing complete primary-mailbox metadata and inspecting original references")
+		if verifier.senderDiagnostics || verifier.selectedOriginal != 0 {
+			fmt.Fprintln(agent.Stderr(), "[hint] legacy paired diagnostics: enumerating primary-mailbox metadata then inspecting original references; no proposal")
+		} else {
+			fmt.Fprintln(agent.Stderr(), "[hint] inspecting every original immutable reference in the complete historical inventory; no mailbox enumeration")
+		}
 		status := "review"
 		if execute {
 			bound, e := store.ReconcileLegacy(ctx, dbPath(cmd), p.Account(), prep, confirmR, verifier)
@@ -422,11 +465,11 @@ func newReconcileCommand(deps Deps) *cobra.Command {
 				}
 			}
 			fmt.Fprintln(agent.Stderr(), "[hint] reconciliation_digest identifies the inspected-state/history proposal to approve; audit_digest identifies this run's raw observations only. A fresh execution audit may differ from preview; it cannot authorize attribution")
-			fmt.Fprintf(agent.Stderr(), "[hint] review every disposition, old-to-current membership change, sender-address disagreement, address casing pair and sender/recipient display-name pair, and confirm ALL history belongs to this account, including unavailable references; no deletion or historical ownership is proved by absence. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
+			fmt.Fprintf(agent.Stderr(), "[hint] review every exact inspected state, reference-scoped unavailable outcome and old-to-current membership change, and confirm ALL history belongs to this account; item-not-found proves neither deletion nor historical ownership. With owner approval: mailpipe account reconcile --execute --confirm-account %s --confirm-history %s --confirm-reconciliation %s\n", p.Account().ID, prep.Digest(), verifier.report.Digest)
 		}
 		return reconciliationOutput(agent, status, verifier.report)
 	})
-	cmd.Flags().String("sender-address-diagnostic-out", "", "write a sender-address observation to a new owner-private file (preview only; no proof)")
+	cmd.Flags().String("sender-address-diagnostic-out", "", "write a legacy paired mailbox-list observation to a new owner-private file (preview only; no proof or proposal)")
 	cmd.Flags().String("sender-address-diagnostic-n", "", "select one original observation, without admission or historical validation; requires diagnostic-out; always exits runtime 1, even when saved")
 	cmd.Flags().Bool("execute", false, "bind only fresh validated evidence matching the reviewed approval; audit is regenerated")
 	cmd.Flags().String("confirm-account", "", "exact reviewed immutable account")

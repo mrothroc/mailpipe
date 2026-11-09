@@ -33,3 +33,4 @@ is described in the guides above; implementation contracts are in source and tes
 - [Complete image filing](adr/0009-complete-image-filing.md)
 - [Exact-ID historical reconciliation](adr/0010-exact-id-reconciliation.md)
 - [Reconciliation approval and audit](adr/0011-reconciliation-approval-audit-digests.md)
+- [Reference-scoped reconciliation](adr/0012-reference-scoped-reconciliation.md)

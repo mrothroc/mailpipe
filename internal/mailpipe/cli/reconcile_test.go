@@ -153,7 +153,7 @@ func TestReconciliationErrorsDistinguishIncompleteAndStructuralEvidence(t *testi
 			s.Close()
 			switch kind {
 			case "partial":
-				e.graph.pagesErr = &graph.APIError{Status: 403, Code: "ErrorAccessDenied"}
+				e.graph.batchErr = &graph.APIError{Status: 403, Code: "ErrorAccessDenied"}
 			case "no-anchor":
 				e.graph.server = map[string]serverMsg{}
 				e.graph.pages = map[string][]graph.Page{}

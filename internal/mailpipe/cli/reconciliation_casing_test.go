@@ -62,7 +62,7 @@ func (g *casingGraph) Batch(ctx context.Context, requests []graph.BatchRequest) 
 	return responses, nil
 }
 
-func TestReconcileCasingReview(t *testing.T) {
+func TestReconcileExactRecipientStateReview(t *testing.T) {
 	e := newEnv(t)
 	seedConflictHistory(t, e, []string{"original"}, "<original@example.org>", "sender@example.org")
 	e.graph.server = map[string]serverMsg{"original": {"inbox", "<original@example.org>", "sender@example.org"}}
@@ -79,10 +79,10 @@ func TestReconcileCasingReview(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("casing preview: %d %s", code, stderr)
 	}
-	if !strings.Contains(out, `"recipient_casing_changed":true`) || !strings.Contains(out, `"enumerated_state":`) || !strings.Contains(out, "Reader@Example.org") || !strings.Contains(out, "reader@example.org") || !strings.Contains(out, `"version":8`) {
+	if strings.Contains(out, `"recipient_casing_changed"`) || strings.Contains(out, `"enumerated_state"`) || !strings.Contains(out, "reader@example.org") || !strings.Contains(out, `"version":9`) {
 		t.Fatal("missing exact casing review evidence")
 	}
-	if g.pages != 1 || g.batches != 1 || len(g.moved) != 0 {
+	if g.pages != 0 || g.batches != 1 || len(g.moved) != 0 {
 		t.Fatal("casing policy added requests or mutations")
 	}
 	legacy, err := store.Open(e.db)
@@ -102,7 +102,7 @@ func TestReconcileCasingReview(t *testing.T) {
 	}
 	e.auth.signedIn = false
 	pages, batches := g.pages, g.batches
-	if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || !strings.Contains(out, "Reader@Example.org") {
+	if code, out, stderr = e.run("account", "reconcile", "--json"); code != 0 || !strings.Contains(out, "reader@example.org") {
 		t.Fatalf("offline pair: %d %s", code, stderr)
 	}
 	if g.pages != pages || g.batches != batches || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {
@@ -123,7 +123,7 @@ func TestReconcileCasingWhitespaceStillFailsWithoutProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, out, stderr := e.run("account", "reconcile", "--json")
+	code, out, stderr := e.run(legacyDiagnosticArgs(t)...)
 	if code != agentio.ExitRuntime || out != "" || !strings.Contains(stderr, "category=metadata-changed") || strings.Contains(stderr, "--confirm-reconciliation") {
 		t.Fatalf("noncasing mismatch emitted authority: %d %s", code, stderr)
 	}

@@ -1,6 +1,7 @@
 package graphmail
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -164,6 +165,19 @@ func reconciliationReadCategory(err error) string {
 	}
 }
 
+// The wire decoder already validated JSON syntax. Classify only token shape;
+// an object does not validate its reason or establish a removal/deletion event.
+func reconciliationRemovalCategory(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if bytes.Equal(raw, []byte("null")) {
+		return "removed-marker-null"
+	}
+	if len(raw) > 0 && raw[0] == '{' {
+		return "removed-marker-object"
+	}
+	return "removed-marker-invalid-shape"
+}
+
 const legacyMessageLimit = 1000000
 const legacyPageLimit = 100000
 
@@ -193,25 +207,33 @@ type legacyAcquisition struct {
 	enumeratedIntegrity, inspectedIntegrity map[string]bool
 }
 
-func (p *Provider) acquireLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int, capture bool, selectedN int64) (out legacyAcquisition, err error) {
-	out.Started = time.Now().UTC()
+func legacyReferenceTargets(account mailbox.AccountID, refs []LegacyReference, selectedN int64) (map[string]LegacyReference, error) {
 	targets := map[string]LegacyReference{}
 	numbers := map[int64]bool{}
 	for _, r := range refs {
-		if r.N <= 0 || numbers[r.N] || r.Ref.Validate(p.account.ID) != nil || r.Ref.MessageID != mailbox.MessageID(r.Ref.Locator) || r.Collection.Validate(p.account.ID) != nil {
-			return out, reconciliationBlock("invalid original identity or account; preserve the mirror and request owner review")
+		if r.N <= 0 || numbers[r.N] || r.Ref.Validate(account) != nil || r.Ref.MessageID != mailbox.MessageID(r.Ref.Locator) || r.Collection.Validate(account) != nil {
+			return nil, reconciliationBlock("invalid original identity or account; preserve the mirror and request owner review")
 		}
 		id := string(r.Ref.MessageID)
 		if _, ok := targets[id]; ok {
-			return out, reconciliationBlock("ambiguous original immutable identities; preserve the mirror and request owner review")
+			return nil, reconciliationBlock("ambiguous original immutable identities; preserve the mirror and request owner review")
 		}
 		targets[id] = r
 		numbers[r.N] = true
 	}
 	if selectedN != 0 && !numbers[selectedN] {
-		return out, reconciliationBlock("requested original is not a live historical reference")
+		return nil, reconciliationBlock("requested original is not a live historical reference")
 	}
-	seen := map[string]bool{}
+	return targets, nil
+}
+
+func (p *Provider) acquireLegacyReferences(ctx context.Context, refs []LegacyReference, messageLimit, pageLimit int, capture bool, selectedN int64) (out legacyAcquisition, err error) {
+	out.Started = time.Now().UTC()
+	targets, err := legacyReferenceTargets(p.account.ID, refs, selectedN)
+	if err != nil {
+		return out, err
+	}
+	seen := map[string]int{}
 	links := map[string]bool{}
 	listed := map[string]mailbox.State{}
 	var enumeratedOrigins, inspectedOrigins map[string]ReconciliationSenderAddressOrigin
@@ -273,14 +295,21 @@ func (p *Provider) acquireLegacyReferences(ctx context.Context, refs []LegacyRef
 			if out.Observed >= messageLimit {
 				return out, &ReconciliationError{Structural: true, Reason: "primary-mailbox enumeration message limit reached; preserve the mirror and request a reviewed resource plan"}
 			}
-			if len(w.Removed) != 0 || seen[w.ID] {
-				return out, incompleteEvidence("enumeration", "duplicate-or-removed-record", errors.New("duplicate, removed or oversized enumeration"))
+			if len(w.Removed) != 0 {
+				return out, incompleteEvidence("enumeration", reconciliationRemovalCategory(w.Removed), errors.New("duplicate, removed or oversized enumeration"))
+			}
+			if firstPage, repeated := seen[w.ID]; repeated {
+				category := "duplicate-id-within-page"
+				if firstPage != out.Pages {
+					category = "duplicate-id-across-pages"
+				}
+				return out, incompleteEvidence("enumeration", category, errors.New("duplicate, removed or oversized enumeration"))
 			}
 			state, e := p.state(w)
 			if e != nil {
 				return out, incompleteEvidence("enumeration", "invalid-message-state", e)
 			}
-			seen[w.ID] = true
+			seen[w.ID] = out.Pages
 			out.Observed++
 			if target, ok := targets[w.ID]; ok {
 				if selectedN == 0 || (capture && target.N == selectedN) {
@@ -315,7 +344,11 @@ func (p *Provider) acquireLegacyReferences(ctx context.Context, refs []LegacyRef
 	}
 	var observe inspectionObserver
 	if capture || selectedN == 0 {
-		observe = func(ref mailbox.MessageRef, raw json.RawMessage, state mailbox.State) error {
+		observe = func(ref mailbox.MessageRef, response graph.BatchResponse, state mailbox.State, readErr error) error {
+			if readErr != nil {
+				return nil
+			}
+			raw := response.Body
 			if selectedN != 0 && targets[string(ref.MessageID)].N != selectedN {
 				return nil
 			}
