@@ -1,6 +1,7 @@
 # Exact-ID historical reconciliation
 
-Status: accepted.
+Status: accepted. Raw-observation approval identity is superseded by
+[ADR 0011](0011-reconciliation-approval-audit-digests.md); other constraints remain.
 
 ## Context
 

@@ -79,7 +79,7 @@ func TestReconcileCasingReview(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("casing preview: %d %s", code, stderr)
 	}
-	if !strings.Contains(out, `"recipient_casing_changed":true`) || !strings.Contains(out, `"enumerated_state":`) || !strings.Contains(out, "Reader@Example.org") || !strings.Contains(out, "reader@example.org") || !strings.Contains(out, `"version":7`) {
+	if !strings.Contains(out, `"recipient_casing_changed":true`) || !strings.Contains(out, `"enumerated_state":`) || !strings.Contains(out, "Reader@Example.org") || !strings.Contains(out, "reader@example.org") || !strings.Contains(out, `"version":8`) {
 		t.Fatal("missing exact casing review evidence")
 	}
 	if g.pages != 1 || g.batches != 1 || len(g.moved) != 0 {

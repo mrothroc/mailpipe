@@ -835,11 +835,16 @@ func (a *AccountStore) bindLegacyTransaction(ctx context.Context, q sqlAccess, p
 		if !reconciliation.evidence.Verification.HistoricalAttributionConfirmed {
 			return errors.New("store: historical attribution confirmation required before binding")
 		}
+		// A fresh execution may differ from the preview audit. This receipt is
+		// the frozen snapshot of THIS execution, so both identities must hold.
+		if err := checkReconciliationReceiptDigests(reconciliation.receipt); err != nil {
+			return err
+		}
 		reviewed, err := ReviewLegacyReconciliation(account, p, reconciliation.evidence)
 		if err != nil {
 			return err
 		}
-		if reviewed.Digest != reconciliation.confirmation || reviewed.Digest != reconciliation.receipt.Digest {
+		if reviewed.Digest != reconciliation.confirmation || reviewed.Digest != reconciliation.receipt.Digest || reviewed.AuditDigest != reconciliation.receipt.AuditDigest {
 			return stale("reconciliation changed before binding")
 		}
 		reconciliation.receipt = reviewed

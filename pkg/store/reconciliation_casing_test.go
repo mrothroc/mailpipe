@@ -68,8 +68,8 @@ func TestReconciliationCasingReceipt(t *testing.T) {
 	if r.Items[0].RecipientNameChanged {
 		t.Fatal("address-only evidence acquired a name flag")
 	}
-	if r.Version != 7 {
-		t.Fatalf("new casing review needs v7, got %d", r.Version)
+	if r.Version != 8 {
+		t.Fatalf("new casing review needs v8, got %d", r.Version)
 	}
 	raw, _ := json.Marshal(r.Items[0])
 	var item struct {
@@ -184,10 +184,10 @@ func TestReconciliationCasingValidationAndDigest(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (r.Digest == base.Digest) != (side == "timestamps") {
+			if (r.Digest == base.Digest) != (side != "inspection") || r.AuditDigest == base.AuditDigest {
 				t.Fatal("digest does not cover raw observation pair")
 			}
-			if side != "timestamps" {
+			if side == "inspection" {
 				b, err := ReconcileLegacy(context.Background(), path, a, p, base.Digest, reconcileLegacyFunc(func(context.Context, mailbox.Account, LegacyPreparation) (LegacyReconciliation, error) { return x, nil }))
 				if b != nil {
 					b.Close()
@@ -212,7 +212,7 @@ func TestReconciliationCasingValidationAndDigest(t *testing.T) {
 	if base.Items[0].EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" || base.Items[0].State.Metadata.Recipients[0].Name != "Reader" {
 		t.Fatal("receipt aliases verifier")
 	}
-	if r, err := ReviewLegacyReconciliation(a, p, owned); err != nil || r.Digest != base.Digest {
+	if r, err := ReviewLegacyReconciliation(a, p, owned); err != nil || r.Digest != base.Digest || r.AuditDigest != base.AuditDigest {
 		t.Fatal("owned proof aliases verifier", err)
 	}
 }
@@ -255,7 +255,7 @@ func reconciliationV2Digest(t *testing.T, r LegacyReconciliationReceipt) string 
 }
 
 func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
-	for _, kind := range []string{"valid", "changed-pair", "changed-sender", "changed-name", "missing-pair", "v1", "v2", "v3", "v4", "v5", "v6"} {
+	for _, kind := range []string{"valid", "changed-pair", "changed-sender", "changed-name", "missing-pair", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v7-paired"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx := context.Background()
 			path, a, p, v := casingPreparation(t)
@@ -264,7 +264,7 @@ func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
 			enumerated.Metadata.Sender.Address = "SENDER@Example.org"
 			enumerated.Metadata.Sender.Name = "Before Display"
 			v.EnumeratedStates[n] = enumerated
-			if kind == "v1" || kind == "v2" || kind == "v3" || kind == "v4" || kind == "v5" || kind == "v6" {
+			if kind == "v1" || kind == "v2" || kind == "v3" || kind == "v4" || kind == "v5" || kind == "v6" || kind == "v7" {
 				v.EnumeratedStates = nil
 			}
 			r, err := ReviewLegacyReconciliation(a, p, v)
@@ -289,6 +289,21 @@ func TestReconciliationCasingTransactionRevalidatesOwnedPair(t *testing.T) {
 			}
 			if kind == "v6" {
 				confirmation = reconciliationV6Digest(t, r)
+			}
+			if kind == "v7" || kind == "v7-paired" {
+				confirmation = reconciliationV7Digest(t, r)
+				if confirmation == r.Digest {
+					t.Fatal("pending v7 acquired current approval semantics")
+				}
+			}
+			if kind == "v7-paired" {
+				// Review above admitted this exact paired evidence against unchanged
+				// history. Keep its raw pair/flags in the authentic old preimage.
+				frozen := reconciliationV7Frozen(t, r)
+				item := frozen.Items[0]
+				if item.EnumeratedState == nil || !item.SenderNameChanged || !item.SenderCasingChanged || !item.RecipientCasingChanged || item.EnumeratedState.Metadata.Sender.Address != "SENDER@Example.org" || item.State.Metadata.Sender.Address != r.Items[0].State.Metadata.Sender.Address {
+					t.Fatal("pending v7 fixture lost its paired evidence")
+				}
 			}
 			owned := ownReconciliation(v)
 			if kind == "changed-pair" {
@@ -400,7 +415,7 @@ func TestReconciliationCasingBindingPreservesHistoryAndAuthoritativeInventory(t 
 		t.Fatal(err)
 	}
 	read, found, err := ReadLegacyReconciliationReceipt(ctx, path, a)
-	if err != nil || !found || read.Version != 7 || !read.Items[0].SenderNameChanged || read.Items[0].EnumeratedState.Metadata.Sender.Name != "Before Display" || !read.Items[0].SenderCasingChanged || read.Items[0].EnumeratedState.Metadata.Sender.Address != enumerated.Metadata.Sender.Address || read.Digest != r.Digest || read.Items[0].EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" {
+	if err != nil || !found || read.Version != 8 || !read.Items[0].SenderNameChanged || read.Items[0].EnumeratedState.Metadata.Sender.Name != "Before Display" || !read.Items[0].SenderCasingChanged || read.Items[0].EnumeratedState.Metadata.Sender.Address != enumerated.Metadata.Sender.Address || read.Digest != r.Digest || read.Items[0].EnumeratedState.Metadata.Recipients[0].Address != "Reader@Example.org" {
 		t.Fatal("receipt pair not retained offline", err)
 	}
 }

@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -67,6 +65,7 @@ type LegacyReconciliationReceipt struct {
 	Account                        mailbox.Account                  `json:"account"`
 	SourceDigest                   string                           `json:"source_digest"`
 	Digest                         string                           `json:"reconciliation_digest"`
+	AuditDigest                    string                           `json:"audit_digest,omitempty"`
 	Coverage                       string                           `json:"coverage"`
 	Started                        time.Time                        `json:"started"`
 	Finished                       time.Time                        `json:"finished"`
@@ -80,7 +79,8 @@ type LegacyReconciliationReceipt struct {
 }
 
 // ReviewLegacyReconciliation validates complete, disjoint coverage and derives a
-// deterministic proposal digest. Preview does not require owner confirmation.
+// stable approval and separate raw-observation audit digests. Preview does not
+// require owner confirmation.
 func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v LegacyReconciliation) (LegacyReconciliationReceipt, error) {
 	v = ownReconciliation(v)
 	r := LegacyReconciliationReceipt{}
@@ -102,7 +102,7 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 	if len(v.Unavailable) > 0 && len(v.Verification.States) == 0 {
 		return r, stale("insufficient same-account live evidence; preserve the mirror and restore access to an original immutable reference or ask the owner for an approved evidence policy")
 	}
-	r = LegacyReconciliationReceipt{Version: 7, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
+	r = LegacyReconciliationReceipt{Version: 8, Account: a, SourceDigest: p.digest, Coverage: v.Coverage, Started: v.Started, Finished: v.Finished, Pages: v.Pages, Observed: v.Observed, HistoricalAttributionConfirmed: v.Verification.HistoricalAttributionConfirmed, Folders: v.Verification.Folders}
 	acceptedPairs := make(map[int64]bool, len(v.EnumeratedStates))
 	acceptedIntegrity := make(map[int64]bool, len(v.SenderSourceIntegrity))
 	for _, m := range p.Live {
@@ -170,18 +170,11 @@ func ReviewLegacyReconciliation(a mailbox.Account, p LegacyPreparation, v Legacy
 	}
 	// Items are sorted independently of exported preparation slice order.
 	sort.Slice(r.Items, func(i, j int) bool { return r.Items[i].N < r.Items[j].N })
-	raw, e := json.Marshal(struct {
-		Domain           string
-		Account          mailbox.Account
-		Source, Coverage string
-		Folders          map[string]mailbox.CollectionRef
-		Items            []LegacyReconciliationItem
-	}{"mailpipe-legacy-reconciliation-v7", a, p.digest, v.Coverage, r.Folders, r.Items})
+	approval, audit, e := reconciliationReceiptDigests(r)
 	if e != nil {
 		return LegacyReconciliationReceipt{}, e
 	}
-	h := sha256.Sum256(raw)
-	r.Digest = hex.EncodeToString(h[:])
+	r.Digest, r.AuditDigest = approval, audit
 	return r, nil
 }
 

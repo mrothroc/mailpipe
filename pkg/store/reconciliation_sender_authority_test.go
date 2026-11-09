@@ -2,9 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -32,7 +29,7 @@ func TestReconciliationSenderAuthorityIndependentReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	i := r.Items[0]
-	if r.Version != 7 || !i.SenderAddressDisagrees || i.SenderCasingChanged || !i.SenderNameChanged || !i.RecipientCasingChanged || i.EnumeratedState.Metadata.Sender.Address != "enumerated@example.org" || i.State.Metadata.Sender.Address != v.Verification.States[n].Metadata.Sender.Address {
+	if r.Version != 8 || !i.SenderAddressDisagrees || i.SenderCasingChanged || !i.SenderNameChanged || !i.RecipientCasingChanged || i.EnumeratedState.Metadata.Sender.Address != "enumerated@example.org" || i.State.Metadata.Sender.Address != v.Verification.States[n].Metadata.Sender.Address {
 		t.Fatal("raw directional flags not independently derived")
 	}
 	owned := ownReconciliation(v)
@@ -42,7 +39,7 @@ func TestReconciliationSenderAuthorityIndependentReview(t *testing.T) {
 	e.Metadata.Recipients[0].Name = "Mutated"
 	v.EnumeratedStates[n] = e
 	again, err := ReviewLegacyReconciliation(a, p, owned)
-	if err != nil || again.Digest != r.Digest || !owned.SenderSourceIntegrity[n] {
+	if err != nil || again.Digest != r.Digest || again.AuditDigest != r.AuditDigest || !owned.SenderSourceIntegrity[n] {
 		t.Fatal("owned evidence aliases verifier", err)
 	}
 	for _, field := range []string{"sender", "name", "recipient", "flag"} {
@@ -61,7 +58,7 @@ func TestReconciliationSenderAuthorityIndependentReview(t *testing.T) {
 		}
 		changed.EnumeratedStates[n] = e
 		modified, err := ReviewLegacyReconciliation(a, p, changed)
-		if err != nil || modified.Digest == r.Digest {
+		if err != nil || modified.Digest != r.Digest || modified.AuditDigest == r.AuditDigest {
 			t.Fatal("raw evidence/derived flag not digest-bound", field, err)
 		}
 	}
@@ -151,19 +148,12 @@ func TestReconciliationSenderAuthorityFinalTransaction(t *testing.T) {
 				owned.EnumeratedStates[n] = e
 			case "receipt-flag":
 				r.Items[0].SenderAddressDisagrees = false
-				raw, e := json.Marshal(struct {
-					Domain           string
-					Account          mailbox.Account
-					Source, Coverage string
-					Folders          map[string]mailbox.CollectionRef
-					Items            []LegacyReconciliationItem
-				}{"mailpipe-legacy-reconciliation-v7", r.Account, r.SourceDigest, r.Coverage, r.Folders, r.Items})
+				var e error
+				r.Digest, r.AuditDigest, e = reconciliationReceiptDigests(r)
 				if e != nil {
 					t.Fatal(e)
 				}
-				h := sha256.Sum256(raw)
-				confirmation = hex.EncodeToString(h[:])
-				r.Digest = confirmation
+				confirmation = r.Digest
 			case "old-v5":
 				confirmation = reconciliationV5Digest(t, r)
 			}
@@ -240,7 +230,7 @@ func TestReconciliationSenderAuthorityPreservesCompleteHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	read, found, err := ReadLegacyReconciliationReceipt(ctx, path, a)
-	if err != nil || !found || read.Version != 7 || read.Digest != r.Digest || !read.Items[0].SenderAddressDisagrees || read.Items[0].SenderCasingChanged {
+	if err != nil || !found || read.Version != 8 || read.Digest != r.Digest || !read.Items[0].SenderAddressDisagrees || read.Items[0].SenderCasingChanged {
 		t.Fatal("current offline receipt lost flags", err)
 	}
 }

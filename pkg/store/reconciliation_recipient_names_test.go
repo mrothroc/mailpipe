@@ -2,8 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -41,7 +39,7 @@ func TestReconciliationRecipientNameIndependentReview(t *testing.T) {
 				t.Fatal(err)
 			}
 			i := r.Items[0]
-			if r.Version != 7 || !i.RecipientNameChanged || i.RecipientCasingChanged != casing || i.SenderNameChanged || i.SenderCasingChanged || i.SenderAddressDisagrees {
+			if r.Version != 8 || !i.RecipientNameChanged || i.RecipientCasingChanged != casing || i.SenderNameChanged || i.SenderCasingChanged || i.SenderAddressDisagrees {
 				t.Fatal("independent flags or version incorrect")
 			}
 			if !reflect.DeepEqual(i.EnumeratedState.Metadata.Recipients, v.EnumeratedStates[n].Metadata.Recipients) || !reflect.DeepEqual(i.State.Metadata.Recipients, v.Verification.States[n].Metadata.Recipients) || !recipientNameEvidenceUnchanged(t, v, before) {
@@ -52,7 +50,7 @@ func TestReconciliationRecipientNameIndependentReview(t *testing.T) {
 			v.Verification.States[n].Metadata.Recipients[0].Name = "Mutated current"
 			v.EnumeratedStates[n].Memberships[0].Collection.CollectionID = "mutated"
 			again, err := ReviewLegacyReconciliation(a, p, owned)
-			if err != nil || again.Digest != r.Digest || i.EnumeratedState.Metadata.Recipients[0].Name != "Original display" || i.State.Metadata.Recipients[0].Name != "Current display" {
+			if err != nil || again.Digest != r.Digest || again.AuditDigest != r.AuditDigest || i.EnumeratedState.Metadata.Recipients[0].Name != "Original display" || i.State.Metadata.Recipients[0].Name != "Current display" {
 				t.Fatal("owned evidence or receipt aliases verifier", err)
 			}
 			// The flag is independently derived even when duplicate address slots are
@@ -103,15 +101,17 @@ func TestReconciliationRecipientNameEncodingAndRawDigest(t *testing.T) {
 			}
 			states[n].Metadata.Recipients[0].Name = "Other raw display"
 			r, err := ReviewLegacyReconciliation(a, p, x)
-			if err != nil || r.Digest == base.Digest {
-				t.Fatal("raw name omitted from digest", err)
+			if err != nil || (r.Digest == base.Digest) != (side == "enumeration") || r.AuditDigest == base.AuditDigest {
+				t.Fatal("approval/audit sensitivity incorrect", err)
 			}
-			bound, err := ReconcileLegacy(context.Background(), path, a, p, base.Digest, reconcileLegacyFunc(func(context.Context, mailbox.Account, LegacyPreparation) (LegacyReconciliation, error) { return x, nil }))
-			if bound != nil {
-				bound.Close()
-			}
-			if !errors.Is(err, mailbox.ErrStaleIdentity) {
-				t.Fatal("changed name reused reviewed R", err)
+			if side == "inspection" {
+				bound, err := ReconcileLegacy(context.Background(), path, a, p, base.Digest, reconcileLegacyFunc(func(context.Context, mailbox.Account, LegacyPreparation) (LegacyReconciliation, error) { return x, nil }))
+				if bound != nil {
+					bound.Close()
+				}
+				if !errors.Is(err, mailbox.ErrStaleIdentity) {
+					t.Fatal("changed name reused reviewed R", err)
+				}
 			}
 		})
 	}
@@ -142,19 +142,12 @@ func TestReconciliationRecipientNameFinalTransaction(t *testing.T) {
 				} else {
 					r.Items[0].RecipientCasingChanged = true
 				}
-				raw, e := json.Marshal(struct {
-					Domain           string
-					Account          mailbox.Account
-					Source, Coverage string
-					Folders          map[string]mailbox.CollectionRef
-					Items            []LegacyReconciliationItem
-				}{"mailpipe-legacy-reconciliation-v7", a, p.Digest(), r.Coverage, r.Folders, r.Items})
+				var e error
+				r.Digest, r.AuditDigest, e = reconciliationReceiptDigests(r)
 				if e != nil {
 					t.Fatal(e)
 				}
-				h := sha256.Sum256(raw)
-				confirmation = hex.EncodeToString(h[:])
-				r.Digest = confirmation
+				confirmation = r.Digest
 			case "old-v6":
 				confirmation = reconciliationV6Digest(t, r)
 			}

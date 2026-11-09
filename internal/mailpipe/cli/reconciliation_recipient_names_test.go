@@ -42,7 +42,7 @@ func TestReconcileRecipientNameReview(t *testing.T) {
 			}
 			rows := reconciliationRows(t, out)
 			item := rows[1]
-			if item["recipient_name_changed"] != true || item["recipient_casing_changed"] != combined || item["sender_casing_changed"] != combined || item["sender_name_changed"] != combined || rows[0]["version"] != float64(7) {
+			if item["recipient_name_changed"] != true || item["recipient_casing_changed"] != combined || item["sender_casing_changed"] != combined || item["sender_name_changed"] != combined || rows[0]["version"] != float64(8) {
 				t.Fatal("name/address flags or v7 not independently derived")
 			}
 			if g.pages != 1 || g.batches != 1 || len(g.moved) != 0 || g.bodyCalls.Load() != 0 || g.rawCalls.Load() != 0 {

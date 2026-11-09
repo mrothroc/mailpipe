@@ -34,7 +34,7 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 				current.Metadata.Recipients = append(current.Metadata.Recipients, mailbox.Address{Address: fmt.Sprintf("reader%d@example.org", i), Name: "Current recipient-" + strings.Repeat("名", 4096) + secret + "\x1b\u202e"})
 				enumerated.Metadata.Recipients = append(enumerated.Metadata.Recipients, mailbox.Address{Address: fmt.Sprintf("Reader%d@Example.org", i), Name: "Original recipient-" + strings.Repeat("名", 4096) + secret + "\x1b\u202e"})
 			}
-			r := store.LegacyReconciliationReceipt{Version: 7, Items: []store.LegacyReconciliationItem{{N: 9007199254740993, Disposition: "verified", State: &current, EnumeratedState: &enumerated, RecipientNameChanged: true, RecipientCasingChanged: true, SenderCasingChanged: true, SenderNameChanged: true}}}
+			r := store.LegacyReconciliationReceipt{Version: 8, Digest: "approval-example", AuditDigest: "audit-example", Items: []store.LegacyReconciliationItem{{N: 9007199254740993, Disposition: "verified", State: &current, EnumeratedState: &enumerated, RecipientNameChanged: true, RecipientCasingChanged: true, SenderCasingChanged: true, SenderNameChanged: true}}}
 			if err := reconciliationOutput(agent, "review", r); err != nil {
 				t.Fatal(err)
 			}
@@ -66,7 +66,7 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 				if err = json.Unmarshal([]byte(lines[len(lines)-1]), &row); err != nil {
 					t.Fatal(err)
 				}
-				if row["recipient_name_changed"] != true || row["recipient_casing_changed"] != true || row["sender_casing_changed"] != true || row["sender_name_changed"] != true {
+				if row["reconciliation_digest"] != "approval-example" || row["audit_digest"] != "audit-example" || row["recipient_name_changed"] != true || row["recipient_casing_changed"] != true || row["sender_casing_changed"] != true || row["sender_name_changed"] != true {
 					t.Fatal("missing review flag")
 				}
 				left = row["enumerated_state"].(map[string]any)
@@ -77,8 +77,18 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 					t.Fatal("unreadable TSV cell layout")
 				}
 				seenFlags := map[string]bool{}
+				seenDigests := map[string]bool{}
 				for i, key := range header {
 					switch key {
+					case "reconciliation_digest", "audit_digest":
+						seenDigests[key] = true
+						want := "approval-example"
+						if key == "audit_digest" {
+							want = "audit-example"
+						}
+						if cells[i] != want {
+							t.Fatal("digest roles confused")
+						}
 					case "recipient_name_changed", "sender_name_changed", "sender_casing_changed", "recipient_casing_changed":
 						seenFlags[key] = true
 						if cells[i] != "true" {
@@ -93,7 +103,7 @@ func TestReconciliationCasingRendererRetainsLongPairs(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				if len(seenFlags) != 4 {
+				if len(seenFlags) != 4 || len(seenDigests) != 2 {
 					t.Fatal("TSV missing explicit independent flag columns")
 				}
 			}
@@ -122,7 +132,7 @@ func TestReconciliationSenderDisagreementRendererRetainsLongStates(t *testing.T)
 			agent := agentio.New("account reconcile", agentio.WithJSON(jsonMode), agentio.WithStdout(&out), agentio.WithStderr(&stderr), agentio.WithOverflowDir(dir), agentio.WithLimit(1))
 			before := mailbox.State{Metadata: mailbox.Metadata{Sender: mailbox.Address{Address: "enumerated-" + strings.Repeat("b", 4096) + secret + "@example.org", Name: "Before\x1b\u202e"}}}
 			after := mailbox.State{Metadata: mailbox.Metadata{Sender: mailbox.Address{Address: "current-" + strings.Repeat("a", 4096) + secret + "@example.org", Name: "After\x1b\u202e"}}}
-			r := store.LegacyReconciliationReceipt{Version: 7, Items: []store.LegacyReconciliationItem{{N: 9007199254740993, Disposition: "verified", State: &after, EnumeratedState: &before, SenderAddressDisagrees: true, SenderNameChanged: true, RecipientCasingChanged: true}}}
+			r := store.LegacyReconciliationReceipt{Version: 8, Digest: "approval-example", AuditDigest: "audit-example", Items: []store.LegacyReconciliationItem{{N: 9007199254740993, Disposition: "verified", State: &after, EnumeratedState: &before, SenderAddressDisagrees: true, SenderNameChanged: true, RecipientCasingChanged: true}}}
 			if err := reconciliationOutput(agent, "review", r); err != nil {
 				t.Fatal(err)
 			}
@@ -196,7 +206,7 @@ func TestReconciliationRecipientNameOutputFailure(t *testing.T) {
 			a := agentio.New("account reconcile", agentio.WithJSON(true), agentio.WithStdout(writer), agentio.WithStderr(&stderr), agentio.WithOverflowDir(t.TempDir()))
 			before := mailbox.State{Metadata: mailbox.Metadata{Recipients: []mailbox.Address{{Address: "reader@example.org", Name: "Before"}}}}
 			after := mailbox.State{Metadata: mailbox.Metadata{Recipients: []mailbox.Address{{Address: "reader@example.org", Name: "After"}}}}
-			r := store.LegacyReconciliationReceipt{Version: 7, Items: []store.LegacyReconciliationItem{{N: 1, Disposition: "verified", State: &after, EnumeratedState: &before, RecipientNameChanged: true}}}
+			r := store.LegacyReconciliationReceipt{Version: 8, Digest: "approval-example", AuditDigest: "audit-example", Items: []store.LegacyReconciliationItem{{N: 1, Disposition: "verified", State: &after, EnumeratedState: &before, RecipientNameChanged: true}}}
 			if err := reconciliationOutput(a, "review", r); !errors.Is(err, cause) {
 				t.Fatal("incomplete report reported success or lost cause", err)
 			}
